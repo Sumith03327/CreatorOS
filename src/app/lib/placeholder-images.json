@@ -1,0 +1,10 @@
+{
+  "placeholderImages": [
+    {
+      "id": "channel-avatar",
+      "description": "Digital Horizon Channel Avatar",
+      "imageUrl": "https://picsum.photos/seed/creator-hub-avatar/200/200",
+      "imageHint": "tech channel avatar"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Global caches - open to all for research persistence
+    match /channelInsightsCache/{document=**} {
+      allow read, write: if true;
+    }
+    match /geminiInsightsCache/{document=**} {
+      allow read, write: if true;
+    }
+    match /videoPreviewCache/{document=**} {
+      allow read, write: if true;
+    }
+    match /channelWhyCache/{document=**} {
+      allow read, write: if true;
+    }
+    match /quotaStatus/{document=**} {
+      allow read, write: if true;
+    }
+    match /trendSummaries/{document=**} {
+      allow read, write: if true;
+    }
+    match /insightVideos/{document=**} {
+      allow read, write: if true;
+    }
+    match /titlePatterns/{document=**} {
+      allow read, write: if true;
+    }
+
+    // User-specific data using recursive wildcards
+    match /userWatchlist/{userId}/{document=**} {
+      allow read, write: if isOwner(userId);
+    }
+    
+    match /users/{userId}/{document=**} {
+      allow read, write: if isOwner(userId);
+    }
+  }
+}

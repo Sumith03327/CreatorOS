@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "Channel": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Channel",
+      "type": "object",
+      "description": "Represents a YouTube content channel with its core statistics and metadata.",
+      "properties": {
+        "id": { "type": "string" },
+        "channelName": { "type": "string" },
+        "handle": { "type": "string" },
+        "avatarUrl": { "type": "string", "format": "uri" },
+        "subscriberCount": { "type": "number" },
+        "viewCount": { "type": "number" },
+        "uploadsPerMonth": { "type": "number" },
+        "channelAgeMonths": { "type": "number" },
+        "growthScore": { "type": "number" },
+        "badges": { "type": "array", "items": { "type": "string" } },
+        "niche": { "type": "string" },
+        "lastUploadDate": { "type": "string", "format": "date-time" }
+      }
+    },
+    "UserWatchlistChannel": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UserWatchlistChannel",
+      "type": "object",
+      "description": "A YouTube channel saved to a user's personal watchlist.",
+      "properties": {
+        "channelName": { "type": "string" },
+        "handle": { "type": "string" },
+        "avatarUrl": { "type": "string", "format": "uri" },
+        "subscriberCount": { "type": "number" },
+        "uploadsPerMonth": { "type": "number" },
+        "viewCount": { "type": "number" },
+        "channelAgeMonths": { "type": "number" },
+        "growthScore": { "type": "number" },
+        "badges": { "type": "array", "items": { "type": "string" } },
+        "niche": { "type": "string" },
+        "savedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["channelName", "handle", "avatarUrl", "subscriberCount", "savedAt"]
+    }
+  },
+  "auth": {
+    "providers": ["password", "anonymous"]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "userWatchlist/{userId}/channels/{channelId}",
+        "definition": {
+          "entityName": "UserWatchlistChannel",
+          "schema": { "$ref": "#/backend/entities/UserWatchlistChannel" },
+          "description": "Stores channels saved by a user to their watchlist."
+        }
+      },
+      {
+        "path": "channelInsightsCache/{cacheKey}",
+        "definition": {
+          "entityName": "ChannelInsightCache",
+          "schema": { "type": "object" },
+          "description": "Caches YouTube API results for channel insights to optimize performance and cost."
+        }
+      },
+      {
+        "path": "videoPreviewCache/{channelId}",
+        "definition": {
+          "entityName": "VideoPreviewCache",
+          "schema": { "type": "object" },
+          "description": "Caches recent videos for channel preview cards."
+        }
+      },
+      {
+        "path": "channelWhyCache/{channelId}",
+        "definition": {
+          "entityName": "ChannelWhyCache",
+          "schema": { "type": "object" },
+          "description": "Caches AI-generated 'Why to study' insights for channels."
+        }
+      }
+    ]
+  }
+}
