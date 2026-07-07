@@ -7,7 +7,10 @@
  */
 
 const MESH_API_URL = 'https://api.meshapi.ai/v1/chat/completions';
-const DEFAULT_MODEL = 'google/gemini-2.5-flash';
+// NOTE: the active Mesh API key is scoped to this model only. Other models
+// (gemini, gpt, claude, etc.) return HTTP 403 "not permitted for this API key".
+// If the key's plan changes, update this and verify with a live request.
+const DEFAULT_MODEL = 'deepseek-ai/deepseek-v3';
 
 export interface MeshMessage {
   role: 'system' | 'user' | 'assistant';

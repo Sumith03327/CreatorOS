@@ -5,6 +5,7 @@
 
 import { z } from 'zod';
 import { callMesh } from '@/services/mesh';
+import { parseMeshJson } from '@/lib/mesh-json';
 
 const AnalyzeChannelOverviewInputSchema = z.object({
   channelTitle: z.string(),
@@ -26,6 +27,8 @@ const AnalyzeChannelOverviewOutputSchema = z.object({
     hasMerch: z.boolean().describe('Detected merchandise signals.'),
     hasMemberships: z.boolean().describe('Detected membership signals.'),
     revenueStage: z.enum(['Early', 'Growing', 'Established']).describe('Estimated revenue stage based on metrics.'),
+    estimatedRpmLowUsd: z.number().describe('Low end of the estimated long-form ad RPM (USD per 1000 monetized views) for this niche/geo.'),
+    estimatedRpmHighUsd: z.number().describe('High end of the estimated long-form ad RPM (USD per 1000 monetized views) for this niche/geo.'),
   }),
 });
 export type AnalyzeChannelOverviewOutput = z.infer<typeof AnalyzeChannelOverviewOutputSchema>;
@@ -60,6 +63,7 @@ Tasks:
    - Early: Small scale, starting monetization.
    - Growing: Consistent signals, mid-sized audience.
    - Established: High production, clear multiple revenue streams.
+6. Estimate the long-form ad RPM band (USD earned per 1000 monetized views) typical for THIS niche and its likely audience geography. Use realistic ranges, e.g. Finance/Business/Tech are high ($4–$15), Education/How-to mid ($3–$9), Entertainment/Vlogs/Gaming lower ($1–$5), and heavily non-US audiences skew lower. Return a low and high number.
 
 Return JSON structure:
 {
@@ -73,10 +77,12 @@ Return JSON structure:
     "hasSponsorships": boolean,
     "hasMerch": boolean,
     "hasMemberships": boolean,
-    "revenueStage": "Early" | "Growing" | "Established"
+    "revenueStage": "Early" | "Growing" | "Established",
+    "estimatedRpmLowUsd": number,
+    "estimatedRpmHighUsd": number
   }
 }`;
 
   const response = await callMesh(promptStr, systemPrompt);
-  return JSON.parse(response) as AnalyzeChannelOverviewOutput;
+  return parseMeshJson<AnalyzeChannelOverviewOutput>(response);
 }

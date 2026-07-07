@@ -34,6 +34,7 @@ export interface YouTubeChannelData {
 export interface YouTubeVideoData {
   id: string;
   title: string;
+  description?: string;
   thumbnail: string;
   publishedAt: string;
   channelTitle?: string;
@@ -62,13 +63,22 @@ async function handleYoutubeResponse(response: Response) {
 
 export async function fetchYouTubeChannelData(url: string): Promise<YouTubeChannelData | null> {
   if (!API_KEY) throw new Error('YouTube API Key is missing');
-  
-  const idMatch = url.match(/channel\/([a-zA-Z0-9_-]+)/);
-  let channelId = idMatch ? idMatch[1] : null;
+
+  const input = url.trim();
+  let channelId: string | null = null;
+
+  // 1. Direct channel URL: youtube.com/channel/UCxxxx
+  const idMatch = input.match(/channel\/([a-zA-Z0-9_-]+)/);
+  if (idMatch) channelId = idMatch[1];
+
+  // 2. A bare channel ID pasted directly (UC + 22 chars). This avoids a wasteful
+  //    text-search that could resolve to the wrong channel (e.g. history re-clicks).
+  if (!channelId && /^UC[a-zA-Z0-9_-]{22}$/.test(input)) channelId = input;
 
   if (!channelId) {
-    const handleMatch = url.match(/@([a-zA-Z0-9._-]+)/);
-    const query = handleMatch ? `@${handleMatch[1]}` : url;
+    // 3. Handle (@name), vanity URL, or free text → resolve via search.
+    const handleMatch = input.match(/@([a-zA-Z0-9._-]+)/);
+    const query = handleMatch ? `@${handleMatch[1]}` : input;
     const searchUrl = `${BASE_URL}/search?part=snippet&q=${encodeURIComponent(query)}&type=channel&maxResults=1&key=${API_KEY}`;
     const searchRes = await fetch(searchUrl);
     const searchData = await handleYoutubeResponse(searchRes);
@@ -139,18 +149,67 @@ export async function fetchBoomingChannels(niche: string): Promise<any[]> {
   }
 }
 
-export async function fetchRecentVideos(playlistId: string, maxResults: number = 20): Promise<YouTubeVideoData[]> {
-  if (!API_KEY || !playlistId) return [];
-  const endpoint = `${BASE_URL}/playlistItems?part=snippet,contentDetails&playlistId=${playlistId}&maxResults=${maxResults}&key=${API_KEY}`;
-  const response = await fetch(endpoint);
+export interface VideoPage {
+  videos: YouTubeVideoData[];
+  nextPageToken?: string;
+}
+
+/**
+ * Fetches one page (up to 50) of a channel's uploads, enriched with real
+ * statistics + duration, and returns the nextPageToken so callers can paginate
+ * ("See more"). maxResults is clamped to the API's 50-per-page ceiling.
+ */
+export async function fetchChannelVideosPage(playlistId: string, maxResults: number = 50, pageToken?: string): Promise<VideoPage> {
+  if (!API_KEY || !playlistId) return { videos: [] };
+  const perPage = Math.min(Math.max(maxResults, 1), 50);
+  const params = new URLSearchParams({
+    part: 'snippet,contentDetails',
+    playlistId,
+    maxResults: String(perPage),
+    key: API_KEY,
+  });
+  if (pageToken) params.set('pageToken', pageToken);
+
+  const response = await fetch(`${BASE_URL}/playlistItems?${params.toString()}`);
   const data = await handleYoutubeResponse(response);
-  return (data.items || []).map((item: any) => ({
+  const nextPageToken: string | undefined = data.nextPageToken;
+
+  const baseVideos: YouTubeVideoData[] = (data.items || []).map((item: any) => ({
     id: item.contentDetails.videoId,
     title: item.snippet.title,
-    thumbnail: item.snippet.thumbnails.high?.url,
+    description: item.snippet.description || "",
+    thumbnail: item.snippet.thumbnails?.high?.url || item.snippet.thumbnails?.default?.url,
     publishedAt: item.snippet.publishedAt,
     viewCount: "0",
   }));
+
+  const videoIds = baseVideos.map(v => v.id).filter(Boolean);
+  if (videoIds.length === 0) return { videos: baseVideos, nextPageToken };
+
+  // Enrich with real statistics + duration in a single batched call.
+  try {
+    const statsRes = await fetch(`${BASE_URL}/videos?part=statistics,contentDetails&id=${videoIds.join(',')}&key=${API_KEY}`);
+    const statsData = await handleYoutubeResponse(statsRes);
+    const statsById: Record<string, any> = {};
+    for (const v of statsData.items || []) statsById[v.id] = v;
+    return {
+      videos: baseVideos.map(v => ({
+        ...v,
+        viewCount: statsById[v.id]?.statistics?.viewCount || "0",
+        duration: statsById[v.id]?.contentDetails?.duration,
+      })),
+      nextPageToken,
+    };
+  } catch (e) {
+    console.warn('Video stats enrichment failed, returning base video data:', e);
+    return { videos: baseVideos, nextPageToken };
+  }
+}
+
+/** Backwards-compatible single-page helper returning just the video list. */
+export async function fetchRecentVideos(playlistId: string, maxResults: number = 20): Promise<YouTubeVideoData[]> {
+  const { videos } = await fetchChannelVideosPage(playlistId, maxResults);
+  return videos;
 }
 
 export async function fetchVideoDetails(videoId: string): Promise<YouTubeVideoData | null> {
@@ -163,6 +222,7 @@ export async function fetchVideoDetails(videoId: string): Promise<YouTubeVideoDa
   return {
     id: item.id,
     title: item.snippet.title,
+    description: item.snippet.description || "",
     thumbnail: item.snippet.thumbnails.high?.url,
     publishedAt: item.snippet.publishedAt,
     viewCount: item.statistics.viewCount,
@@ -238,6 +298,47 @@ export async function searchTrendingVideos(
     duration: item.contentDetails?.duration,
     subscriberCount: subsByChannel[item.snippet.channelId] || '0',
   }));
+}
+
+export interface ChannelLink {
+  label: string;
+  url: string;
+}
+
+/**
+ * Scrapes a channel's public /about page for its curated "Links" section
+ * (Instagram, X, store, etc.). These links are NOT exposed by the Data API,
+ * so we read them from the page's embedded data. Best-effort: returns [] on any
+ * failure so callers can fall back gracefully.
+ */
+export async function fetchChannelLinks(channelId: string): Promise<ChannelLink[]> {
+  if (!channelId) return [];
+  try {
+    const res = await fetch(`https://www.youtube.com/channel/${channelId}/about`, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    // Each About "Links" entry carries a creator-set title and a redirect
+    // endpoint whose q= param holds the full (untruncated) destination URL.
+    const re = /"channelExternalLinkViewModel":\{"title":\{"content":"([^"]+)"\}.{0,800}?q=([^"&\\]+)/g;
+    const out: ChannelLink[] = [];
+    const seen = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html)) !== null) {
+      let url = m[2];
+      try { url = decodeURIComponent(m[2]); } catch { /* keep raw */ }
+      const key = url.replace(/\/$/, '').toLowerCase();
+      if (!seen.has(key)) { seen.add(key); out.push({ label: m[1], url }); }
+    }
+    return out;
+  } catch (e) {
+    console.warn('fetchChannelLinks failed:', e);
+    return [];
+  }
 }
 
 export async function fetchSupadataTranscript(videoId: string) { return null; }

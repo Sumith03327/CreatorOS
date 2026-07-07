@@ -16,7 +16,9 @@ import {
   Sparkles,
   Video,
   TrendingUp,
-  Bookmark
+  Bookmark,
+  FileVideo,
+  GitCompareArrows
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -25,6 +27,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 
 const navItems = [
   { name: "Channel Analyzer", icon: BarChart3, href: "/" },
+  { name: "Video Performance", icon: FileVideo, href: "/analyzer" },
+  { name: "Compare Channels", icon: GitCompareArrows, href: "/compare" },
   { name: "Script with Max", icon: Sparkles, href: "/max-analyzer" },
 ]
 

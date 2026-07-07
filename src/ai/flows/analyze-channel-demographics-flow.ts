@@ -6,6 +6,7 @@
 
 import { z } from 'zod';
 import { callMesh } from '@/services/mesh';
+import { parseMeshJson } from '@/lib/mesh-json';
 
 const AnalyzeChannelInputSchema = z.object({
   title: z.string(),
@@ -57,5 +58,5 @@ Return JSON structure:
 }`;
 
   const response = await callMesh(promptStr, systemPrompt);
-  return JSON.parse(response) as AnalyzeChannelOutput;
+  return parseMeshJson<AnalyzeChannelOutput>(response);
 }

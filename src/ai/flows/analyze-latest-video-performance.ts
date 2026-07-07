@@ -9,6 +9,7 @@
 
 import { z } from 'zod';
 import { callMesh } from '@/services/mesh';
+import { parseMeshJson } from '@/lib/mesh-json';
 
 const AudienceRetentionDataSchema = z.object({
   timeInSeconds: z.number().describe('Timestamp in seconds.'),
@@ -76,5 +77,5 @@ Return JSON structure:
 }`;
 
   const response = await callMesh(promptStr, systemPrompt);
-  return JSON.parse(response) as AnalyzeLatestVideoPerformanceOutput;
+  return parseMeshJson<AnalyzeLatestVideoPerformanceOutput>(response);
 }
