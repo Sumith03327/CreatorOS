@@ -221,6 +221,20 @@ export async function callMeshWithTools(
 }
 
 /**
+ * Non-streaming JSON completion that keeps the FULL conversation as context
+ * (including `tool` results and loaded skills). Used to turn an agent's work
+ * into a typed deliverable that a dedicated UI can render, instead of prose.
+ */
+export async function callMeshJson(messages: MeshLoopMessage[], model?: string): Promise<string> {
+  const message = await meshRequestRaw(messages, {
+    responseFormat: { type: 'json_object' },
+    model,
+    maxTokens: 3000,
+  });
+  return message.content ?? '';
+}
+
+/**
  * Streaming chat completion. Yields text deltas as they arrive from Mesh's SSE
  * stream. Used for the final assistant turn in the Agents chat so tokens appear
  * in real time.

@@ -11,10 +11,12 @@
 
 import {
   callMeshWithTools,
+  callMeshJson,
   streamMeshChat,
   type MeshLoopMessage,
   type MeshAssistantMessage,
 } from '@/services/mesh';
+import { getDeliverable } from '@/ai/agents/deliverables';
 import { getToolSchemas, executeTool } from '@/ai/tools/agent-tools';
 import { getComposioTools, executeComposioTool, listConnections } from '@/services/composio';
 import { resolveSkills, buildSkillIndex, getSkill } from '@/ai/skills';
@@ -34,6 +36,11 @@ export interface RunCustomAgentInput {
   connectors?: string[];
   /** Expert skill playbooks this agent may load on demand (see src/ai/skills). */
   skills?: string[];
+  /**
+   * Workspace mode: instead of streaming prose, compose a typed JSON result
+   * matching this deliverable schema (see src/ai/agents/deliverables.ts).
+   */
+  deliverable?: string;
   /** Durable, distilled facts about the user, carried across separate chats.
    *  Folded into the system prompt so the agent "remembers" the user. */
   memory?: string;
@@ -45,6 +52,7 @@ export interface RunCustomAgentInput {
 export type AgentEvent =
   | { type: 'status'; content: string } // e.g. "Reading channel…"
   | { type: 'text'; content: string } // a chunk of the final answer
+  | { type: 'deliverable'; content: string } // a typed JSON result for a dedicated UI
   | { type: 'error'; content: string };
 
 // Raised from 5: loading a skill consumes a step, and agents should still have
@@ -60,6 +68,24 @@ const TOOL_STATUS: Record<string, string> = {
   get_trending_summary: 'Scanning current trends…',
   analyze_title_patterns: 'Studying winning titles…',
 };
+
+/**
+ * Models occasionally wrap JSON in prose or code fences even in json mode.
+ * Pull out the outermost object and verify it parses; return null if it doesn't.
+ */
+function extractJson(raw: string): string | null {
+  const cleaned = raw.replace(/^\s*```(?:json)?/i, '').replace(/```\s*$/, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  const candidate = cleaned.slice(start, end + 1);
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
 
 /** Turn a Composio tool name (e.g. GMAIL_SEND_EMAIL) into a friendly app label. */
 function prettyConnector(toolName: string): string {
@@ -179,6 +205,9 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
       console.error('Composio tools unavailable:', e);
     }
   }
+  // Workspace mode: a typed deliverable replaces the streamed prose answer.
+  const spec = getDeliverable(input.deliverable);
+
   // Skills: expose `load_skill` only when this agent actually has skills.
   const agentSkills = resolveSkills(input.skills);
   const skillSchemas = agentSkills.length ? [buildLoadSkillSchema(agentSkills.map((s) => s.name))] : [];
@@ -229,8 +258,24 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
         continue; // loop again with tool results in context
       }
 
-      // No tool calls → the model is ready to answer. Stream that answer fresh
-      // (without tools, since we know none are needed) for real token streaming.
+      // No tool calls → the model is ready to answer.
+
+      // Workspace mode: compose a typed deliverable instead of prose.
+      if (spec) {
+        yield { type: 'status', content: spec.composingLabel };
+        messages.push({ role: 'user', content: spec.instruction });
+        const raw = await callMeshJson(messages, input.model);
+        const json = extractJson(raw);
+        if (json) {
+          yield { type: 'deliverable', content: json };
+          return;
+        }
+        yield { type: 'error', content: 'The agent could not produce a structured result. Try again.' };
+        return;
+      }
+
+      // Chat mode: stream the answer fresh (without tools, since we know none
+      // are needed) for real token streaming.
       let streamed = '';
       for await (const delta of streamMeshChat(messages, { model: input.model })) {
         streamed += delta;
@@ -242,6 +287,15 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
     }
 
     // Hit the step cap with tools still pending — force a final answer, no tools.
+    if (spec) {
+      yield { type: 'status', content: spec.composingLabel };
+      messages.push({ role: 'user', content: spec.instruction });
+      const raw = await callMeshJson(messages, input.model);
+      const json = extractJson(raw);
+      if (json) yield { type: 'deliverable', content: json };
+      else yield { type: 'error', content: 'The agent could not produce a structured result. Try again.' };
+      return;
+    }
     for await (const delta of streamMeshChat(messages, { model: input.model })) {
       yield { type: 'text', content: delta };
     }
@@ -258,7 +312,8 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
 export async function runCustomAgent(input: RunCustomAgentInput): Promise<string> {
   let out = '';
   for await (const ev of runCustomAgentStream(input)) {
-    if (ev.type === 'text') out += ev.content;
+    // In workspace mode the result arrives as one JSON blob rather than deltas.
+    if (ev.type === 'text' || ev.type === 'deliverable') out += ev.content;
     if (ev.type === 'error') throw new Error(ev.content);
   }
   return out;

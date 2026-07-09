@@ -36,12 +36,13 @@ import { updateAgentMemory } from '@/ai/flows/update-agent-memory';
 import * as store from '@/services/agent-store';
 import type { CustomAgent, ChatMessage } from '@/services/agent-store';
 import { BUILTIN_AGENTS, type BuiltinAgent } from '@/ai/agents/builtin-agents';
+import { hasWorkspace, AgentWorkspaceRouter } from '@/components/agents/workspace';
 import { getConnectorCatalog, getConnections, connectApp, searchApps } from './connection-actions';
 import type { ToolkitInfo } from '@/services/composio';
 
 // --- Types ---
 
-type View = 'LIST' | 'CREATE' | 'CHAT' | 'STUDIO';
+type View = 'LIST' | 'CREATE' | 'CHAT' | 'STUDIO' | 'WORKSPACE';
 
 // --- Templates ---
 
@@ -137,6 +138,8 @@ export default function AgentsPage() {
   const [view, setView] = useState<View>('LIST');
   const [agents, setAgents] = useState<CustomAgent[]>([]);
   const [activeAgent, setActiveAgent] = useState<CustomAgent | null>(null);
+  /** The built-in agent currently open in its dedicated workspace. */
+  const [workspaceAgent, setWorkspaceAgent] = useState<BuiltinAgent | null>(null);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -272,6 +275,12 @@ export default function AgentsPage() {
   async function openBuiltin(b: BuiltinAgent) {
     if (b.action === 'STUDIO') {
       setView('STUDIO');
+      return;
+    }
+    // Agents with a dedicated interface skip the generic chat view entirely.
+    if (hasWorkspace(b.id)) {
+      setWorkspaceAgent(b);
+      setView('WORKSPACE');
       return;
     }
     // CHAT built-in: run it through the normal chat loop with its own toolset/model.
@@ -684,6 +693,12 @@ export default function AgentsPage() {
         )}
 
         {view === 'STUDIO' && <div className="relative z-10"><ThumbnailStudio onBack={() => setView('LIST')} /></div>}
+
+        {view === 'WORKSPACE' && workspaceAgent && (
+          <div className="relative z-10">
+            <AgentWorkspaceRouter agent={workspaceAgent} onBack={() => { setWorkspaceAgent(null); setView('LIST'); }} />
+          </div>
+        )}
 
         {view === 'CREATE' && (
           <div className="relative z-10 max-w-2xl mx-auto space-y-8 py-4 animate-in fade-in">
