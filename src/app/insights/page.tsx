@@ -4,13 +4,13 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
-import { 
-  Zap, 
-  RefreshCw, 
-  Flame, 
-  TrendingUp, 
-  User, 
-  BarChart, 
+import {
+  Zap,
+  RefreshCw,
+  Flame,
+  TrendingUp,
+  User,
+  BarChart,
   AlertTriangle,
   Loader2,
   Globe,
@@ -21,7 +21,11 @@ import {
   Video,
   X,
   Plus,
-  Database
+  Database,
+  SearchX,
+  Bookmark,
+  BookmarkPlus,
+  Sparkles
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -37,11 +41,8 @@ import { getTrendSummary, getTitlePatterns } from '@/ai/flows/get-insane-insight
 import { cn } from '@/lib/utils';
 import { errorEmitter } from '@/firebase/error-emitter';
 import { FirestorePermissionError } from '@/firebase/errors';
-
-const BUILT_IN_NICHES = [
-  "Finance India", "Tech Hindi", "Current Affairs", "Motivation", 
-  "Documentary", "Gaming", "Health & Fitness", "Business"
-];
+import { RESEARCH_NICHES } from '@/lib/niches';
+import { getVideoWatchlist, saveVideoWatchlist, type WatchlistVideo } from '@/lib/watchlist';
 
 const LANGUAGES = [
   { label: "All Languages", value: "all" },
@@ -70,13 +71,18 @@ const SORT_OPTIONS = [
   { label: "Rising Fast", value: "rising" }
 ];
 
+const REGIONS = [
+  { label: "India", value: "IN" },
+  { label: "Global", value: "global" }
+];
+
 export default function InsaneInsightsPage() {
   const [mounted, setMounted] = useState(false);
   const { user, firestore, isUserLoading } = useFirebase();
   const router = useRouter();
 
   // Primary Preferences
-  const [selectedNiche, setSelectedNiche] = useState<string>("Finance India");
+  const [selectedNiche, setSelectedNiche] = useState<string>("Finance");
   const [customNiches, setCustomNiches] = useState<string[]>([]);
   const [customNicheInput, setCustomNicheInput] = useState("");
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -93,16 +99,18 @@ export default function InsaneInsightsPage() {
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
-  
+
   const [trendSummary, setTrendSummary] = useState<string[]>([]);
   const [videos, setVideos] = useState<YouTubeVideoData[]>([]);
   const [titleInsights, setTitleInsights] = useState<string[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resilienceMode, setResilienceMode] = useState(false);
+  const [videoWatchlist, setVideoWatchlist] = useState<WatchlistVideo[]>([]);
 
   useEffect(() => {
     setMounted(true);
+    setVideoWatchlist(getVideoWatchlist());
   }, []);
 
   // Focus input when shown
@@ -148,7 +156,7 @@ export default function InsaneInsightsPage() {
     const nicheKey = selectedNiche.replace(/\s+/g, '');
     const filterKey = `${nicheKey}_${dateRange}_${contentType}_${language}_${sortBy}_${region}`;
     const now = Date.now();
-    
+
     try {
       // 1. Trend Summary
       const summaryRef = doc('trendSummaries', `${nicheKey}_${today}`);
@@ -229,7 +237,7 @@ export default function InsaneInsightsPage() {
 
   const handleAddCustomNiche = () => {
     const trimmed = customNicheInput.trim();
-    if (trimmed && !BUILT_IN_NICHES.includes(trimmed) && !customNiches.includes(trimmed)) {
+    if (trimmed && !RESEARCH_NICHES.includes(trimmed) && !customNiches.includes(trimmed)) {
       setCustomNiches(prev => [...prev, trimmed]);
       setSelectedNiche(trimmed);
     }
@@ -239,7 +247,28 @@ export default function InsaneInsightsPage() {
 
   const handleRemoveCustomNiche = (n: string) => {
     setCustomNiches(prev => prev.filter(item => item !== n));
-    if (selectedNiche === n) setSelectedNiche(BUILT_IN_NICHES[0]);
+    if (selectedNiche === n) setSelectedNiche(RESEARCH_NICHES[0]);
+  };
+
+  const toggleVideoBookmark = (video: YouTubeVideoData) => {
+    const isSaved = videoWatchlist.some(item => item.id === video.id);
+    let newItems: WatchlistVideo[];
+    if (isSaved) {
+      newItems = videoWatchlist.filter(i => i.id !== video.id);
+    } else {
+      newItems = [...videoWatchlist, {
+        id: video.id,
+        title: video.title,
+        thumbnail: video.thumbnail,
+        channelTitle: video.channelTitle,
+        channelId: video.channelId,
+        viewCount: video.viewCount,
+        niche: selectedNiche,
+        savedAt: new Date().toISOString(),
+      }];
+    }
+    setVideoWatchlist(newItems);
+    saveVideoWatchlist(newItems);
   };
 
   const filteredVideos = useMemo(() => {
@@ -296,7 +325,7 @@ export default function InsaneInsightsPage() {
 
         <section className="mb-6 space-y-6">
           <div className="flex flex-wrap gap-2">
-            {BUILT_IN_NICHES.map(n => <Button key={n} variant={selectedNiche === n ? "default" : "outline"} size="sm" onClick={() => setSelectedNiche(n)} className={cn("rounded-full px-5 h-8", selectedNiche === n ? "bg-primary" : "border-slate-200")}>{n}</Button>)}
+            {RESEARCH_NICHES.map(n => <Button key={n} variant={selectedNiche === n ? "default" : "outline"} size="sm" onClick={() => setSelectedNiche(n)} className={cn("rounded-full px-5 h-8", selectedNiche === n ? "bg-primary" : "border-slate-200")}>{n}</Button>)}
             {customNiches.map(n => <Button key={n} variant={selectedNiche === n ? "default" : "outline"} size="sm" onClick={() => setSelectedNiche(n)} className="rounded-full pl-5 pr-3 h-8 group gap-2">{n}<X className="h-3 w-3" onClick={(e) => { e.stopPropagation(); handleRemoveCustomNiche(n); }} /></Button>)}
             {!showCustomInput ? <Button variant="outline" size="sm" onClick={() => setShowCustomInput(true)} className="rounded-full px-5 h-8 border-dashed">+ Custom</Button> : (
               <div className="flex items-center gap-1 animate-in slide-in-from-left-2"><Input ref={customInputRef} placeholder="Niche..." value={customNicheInput} onChange={(e) => setCustomNicheInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddCustomNiche()} className="h-8 w-32 rounded-full border-primary" /></div>
@@ -306,6 +335,7 @@ export default function InsaneInsightsPage() {
           <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-6">
             <div className="flex flex-wrap items-end gap-6">
               <FilterGroup label="Content Type" value={contentType} onChange={(v: any) => setContentType(v)} options={['all', 'long', 'short']} />
+              <FilterGroup label="Region" value={region} onChange={(v: any) => setRegion(v)} options={REGIONS} />
               <FilterSelectGroup label="Language" value={language} onChange={setLanguage} options={LANGUAGES} />
               <FilterSelectGroup label="Channel Size" value={channelSize} onChange={setChannelSize} options={CHANNEL_SIZES} />
               <FilterSelectGroup label="Sort By" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
@@ -314,29 +344,61 @@ export default function InsaneInsightsPage() {
         </section>
 
         <div className="space-y-12 animate-in fade-in duration-500">
-          <Card className="border-none shadow-sm overflow-hidden bg-white border-l-4 border-l-primary p-6">
-            <CardTitle className="text-lg font-bold flex items-center gap-2 mb-4"><Zap className="h-4 w-4 text-primary" /> Current Trends</CardTitle>
-            {loading ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : (
-              <ul className="space-y-2">
-                {trendSummary.map((b, i) => <li key={i} className="text-sm text-slate-700 flex gap-2"><span className="h-1.5 w-1.5 rounded-full bg-primary mt-1.5 shrink-0" />{b}</li>)}
-              </ul>
-            )}
-          </Card>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card className="border-none shadow-sm overflow-hidden bg-white border-l-4 border-l-primary p-6">
+              <CardTitle className="text-lg font-bold flex items-center gap-2 mb-4"><Zap className="h-4 w-4 text-primary" /> Current Trends</CardTitle>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : (
+                <ul className="space-y-2">
+                  {trendSummary.map((b, i) => <li key={i} className="text-sm text-slate-700 flex gap-2"><span className="h-1.5 w-1.5 rounded-full bg-primary mt-1.5 shrink-0" />{b}</li>)}
+                </ul>
+              )}
+            </Card>
+
+            <Card className="border-none shadow-sm overflow-hidden bg-white border-l-4 border-l-[#264ADE] p-6">
+              <CardTitle className="text-lg font-bold flex items-center gap-2 mb-4"><Sparkles className="h-4 w-4 text-[#264ADE]" /> Title Patterns</CardTitle>
+              {loading ? <Loader2 className="h-4 w-4 animate-spin text-[#264ADE]" /> : titleInsights.length === 0 ? (
+                <p className="text-sm text-muted-foreground">Not enough trending videos yet to spot a pattern — try widening your filters.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {titleInsights.map((b, i) => <li key={i} className="text-sm text-slate-700 flex gap-2"><span className="h-1.5 w-1.5 rounded-full bg-[#264ADE] mt-1.5 shrink-0" />{b}</li>)}
+                </ul>
+              )}
+            </Card>
+          </div>
 
           {error && <div className={cn("p-4 border rounded-xl flex gap-3", resilienceMode ? "bg-amber-50" : "bg-red-50")}><AlertTriangle className="h-5 w-5 shrink-0" /><p className="text-sm font-medium">{error}</p></div>}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {loading ? Array(8).fill(0).map((_, i) => <Skeleton key={i} className="aspect-video rounded-xl" />) : filteredVideos.map(v => (
-              <Card key={v.id} className="overflow-hidden border-none shadow-sm bg-white group">
-                <div className="relative aspect-video"><Image src={v.thumbnail} alt={v.title} fill className="object-cover" /></div>
-                <CardContent className="p-4 space-y-3">
-                  <h4 className="text-sm font-bold line-clamp-2 h-10">{v.title}</h4>
-                  <div className="flex justify-between text-[10px] text-slate-400"><span>{v.channelTitle}</span><span>{formatNumber(v.viewCount)} views</span></div>
-                  <Button variant="outline" className="w-full h-8 text-xs font-bold" onClick={() => router.push(`/?url=${encodeURIComponent(`https://www.youtube.com/channel/${v.channelId}`)}`)}>Analyse</Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          {!loading && filteredVideos.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-24 text-center border border-dashed border-slate-200 rounded-3xl">
+              <SearchX className="h-8 w-8 text-slate-300" />
+              <p className="text-sm font-bold text-slate-700">No trending videos found for "{selectedNiche}"</p>
+              <p className="text-xs text-muted-foreground max-w-xs">Try widening the date range, switching region, or loosening the channel size filter.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+              {loading ? Array(8).fill(0).map((_, i) => <Skeleton key={i} className="aspect-video rounded-xl" />) : filteredVideos.map(v => {
+                const isSaved = videoWatchlist.some(item => item.id === v.id);
+                return (
+                  <Card key={v.id} className="overflow-hidden border-none shadow-sm bg-white group relative">
+                    <div className="relative aspect-video">
+                      <Image src={v.thumbnail} alt={v.title} fill className="object-cover" />
+                      <button
+                        onClick={() => toggleVideoBookmark(v)}
+                        className={cn("absolute top-2 right-2 h-8 w-8 rounded-full flex items-center justify-center transition-all", isSaved ? "bg-primary/90 text-white" : "bg-black/50 text-white hover:bg-black/70")}
+                      >
+                        {isSaved ? <Bookmark className="h-4 w-4 fill-white" /> : <BookmarkPlus className="h-4 w-4" />}
+                      </button>
+                    </div>
+                    <CardContent className="p-4 space-y-3">
+                      <h4 className="text-sm font-bold line-clamp-2 h-10">{v.title}</h4>
+                      <div className="flex justify-between text-[10px] text-slate-400"><span>{v.channelTitle}</span><span>{formatNumber(v.viewCount)} views</span></div>
+                      <Button variant="outline" className="w-full h-8 text-xs font-bold" onClick={() => router.push(`/?url=${encodeURIComponent(`https://www.youtube.com/channel/${v.channelId}`)}`)}>Analyse</Button>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </div>
       </main>
     </div>
@@ -344,11 +406,12 @@ export default function InsaneInsightsPage() {
 }
 
 function FilterGroup({ label, value, onChange, options }: any) {
+  const normalized = options.map((o: any) => (typeof o === 'string' ? { value: o, label: o } : o));
   return (
     <div className="space-y-2">
       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</p>
       <div className="flex bg-slate-50 p-1 rounded-lg">
-        {options.map((opt: string) => <Button key={opt} variant={value === opt ? "secondary" : "ghost"} size="sm" onClick={() => onChange(opt)} className={cn("h-7 px-4 text-xs rounded-md", value === opt && "bg-white shadow-sm")}>{opt}</Button>)}
+        {normalized.map((opt: any) => <Button key={opt.value} variant={value === opt.value ? "secondary" : "ghost"} size="sm" onClick={() => onChange(opt.value)} className={cn("h-7 px-4 text-xs rounded-md", value === opt.value && "bg-white shadow-sm")}>{opt.label}</Button>)}
       </div>
     </div>
   );

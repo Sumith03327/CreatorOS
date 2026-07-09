@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
+import { getWatchlistCount, subscribeToWatchlistChanges } from "@/lib/watchlist"
 
 const navItems = [
   { name: "Channel Analyzer", icon: BarChart3, href: "/" },
@@ -46,17 +47,8 @@ export function SidebarNav() {
   const [isInsightsOpen, setIsInsightsOpen] = useState(isInsightsActive)
 
   useEffect(() => {
-    const saved = localStorage.getItem('creator-hub-watchlist')
-    if (saved) {
-      setWatchlistCount(JSON.parse(saved).length)
-    }
-    
-    const handleStorage = () => {
-      const saved = localStorage.getItem('creator-hub-watchlist')
-      if (saved) setWatchlistCount(JSON.parse(saved).length)
-    };
-    window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    setWatchlistCount(getWatchlistCount())
+    return subscribeToWatchlistChanges(() => setWatchlistCount(getWatchlistCount()))
   }, [])
 
   useEffect(() => {

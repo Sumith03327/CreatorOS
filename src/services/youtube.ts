@@ -105,14 +105,28 @@ export async function fetchYouTubeChannelData(url: string): Promise<YouTubeChann
   };
 }
 
+/**
+ * Growth score (0-100): approximates how fast a channel is gaining subscribers,
+ * averaged over its lifetime (subs / months since creation), on a log scale so
+ * channels spanning several orders of magnitude in size are comparable.
+ * ~50k net new subs/month averaged over the channel's life scores ~100.
+ */
+function computeGrowthScore(subsPerMonth: number): number {
+  const score = (Math.log10(subsPerMonth + 1) / Math.log10(50000)) * 100;
+  return Math.max(0, Math.min(100, score));
+}
+
 export async function fetchBoomingChannels(niche: string): Promise<any[]> {
   if (!API_KEY) throw new Error('YouTube API Key missing');
 
-  const queries = [`${niche} tips`, `${niche} tutorial`];
+  // Note: YouTube's channel search doesn't support publishedAfter/order=viewCount
+  // for type=channel, so query variety is the main lever for surfacing a broad
+  // candidate pool; growthScore below is what actually ranks them by momentum.
+  const queries = [`${niche} tips`, `${niche} tutorial`, `${niche} channel`, `${niche} explained`];
 
   try {
-    const searchPromises = queries.map(q => 
-      fetch(`${BASE_URL}/search?part=snippet&type=channel&q=${encodeURIComponent(q)}&maxResults=5&key=${API_KEY}`)
+    const searchPromises = queries.map(q =>
+      fetch(`${BASE_URL}/search?part=snippet&type=channel&q=${encodeURIComponent(q)}&maxResults=8&key=${API_KEY}`)
         .then(r => handleYoutubeResponse(r))
     );
     const searchResults = await Promise.all(searchPromises);
@@ -125,11 +139,13 @@ export async function fetchBoomingChannels(niche: string): Promise<any[]> {
     const url = `${BASE_URL}/channels?part=snippet,statistics,contentDetails&id=${idsString}&key=${API_KEY}`;
     const channelsResponse = await fetch(url);
     const channelsData = await handleYoutubeResponse(channelsResponse);
-    
+
     return (channelsData.items || []).map((c: any) => {
       const videoCount = parseInt(c.statistics.videoCount || "0");
       const subCount = parseInt(c.statistics.subscriberCount || "0");
-      const viewCount = parseInt(c.statistics.viewCount || "0");
+      const publishedAt = c.snippet.publishedAt ? new Date(c.snippet.publishedAt).getTime() : Date.now();
+      const channelAgeMonths = Math.max(1, Math.round((Date.now() - publishedAt) / (1000 * 60 * 60 * 24 * 30)));
+      const subsPerMonth = subCount / channelAgeMonths;
       return {
         id: c.id,
         title: c.snippet.title,
@@ -137,10 +153,9 @@ export async function fetchBoomingChannels(niche: string): Promise<any[]> {
         thumbnails: c.snippet.thumbnails,
         statistics: c.statistics,
         handle: c.snippet.customUrl || `@${c.id}`,
-        uploadsPerMonth: Math.round(videoCount / 24),
-        channelAgeMonths: 24,
-        growthScore: (viewCount / Math.max(1, subCount)) * 5,
-        isFaceless: false
+        uploadsPerMonth: Math.round(videoCount / channelAgeMonths),
+        channelAgeMonths,
+        growthScore: computeGrowthScore(subsPerMonth),
       };
     });
   } catch (err) {

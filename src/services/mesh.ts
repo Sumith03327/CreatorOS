@@ -7,26 +7,92 @@
  */
 
 const MESH_API_URL = 'https://api.meshapi.ai/v1/chat/completions';
-// NOTE: the active Mesh API key is scoped to this model only. Other models
-// (gemini, gpt, claude, etc.) return HTTP 403 "not permitted for this API key".
-// If the key's plan changes, update this and verify with a live request.
+// Cheap default model. The existing analysis flows (channel analyzer, research,
+// script analysis, etc.) all run on this — deepseek is the cheapest option and
+// stays the default so their cost profile is unchanged. Only the Agents feature
+// opts into pricier models (Claude/GPT) when a task needs it.
 const DEFAULT_MODEL = 'deepseek-ai/deepseek-v3';
+
+/**
+ * Resolve the Mesh key. Prefer MESH_API_KEY_ALL (unrestricted — reaches all
+ * 1000+ models + image/RAG endpoints); fall back to the older MESH_API_KEY
+ * (historically scoped to deepseek-v3 only).
+ */
+function getMeshKey(): string {
+  const apiKey = process.env.MESH_API_KEY_ALL || process.env.MESH_API_KEY;
+  if (!apiKey) {
+    console.error('Mesh API Key is missing (set MESH_API_KEY_ALL or MESH_API_KEY)');
+    throw new Error('Mesh API Key is missing');
+  }
+  return apiKey;
+}
 
 export interface MeshMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
 }
 
+// --- Tool-calling types (OpenAI-compatible, confirmed supported by Mesh) ---
+
+export interface MeshToolSchema {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, any>;
+  };
+}
+
+export interface MeshToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+/** A message feeding a tool's result back into the conversation. */
+export interface MeshToolResultMessage {
+  role: 'tool';
+  tool_call_id: string;
+  content: string;
+}
+
+/** An assistant turn that may request tool calls instead of (or alongside) text. */
+export interface MeshAssistantMessage {
+  role: 'assistant';
+  content: string | null;
+  tool_calls?: MeshToolCall[];
+}
+
+/** Any message that can appear in a tool-calling loop. */
+export type MeshLoopMessage = MeshMessage | MeshAssistantMessage | MeshToolResultMessage;
+
+interface MeshRequestOptions {
+  responseFormat?: Record<string, any>;
+  model?: string;
+  temperature?: number;
+  tools?: MeshToolSchema[];
+  toolChoice?: 'auto' | 'none' | 'required';
+  maxTokens?: number;
+}
+
 async function meshRequest(
   messages: MeshMessage[],
-  options: { responseFormat?: Record<string, any>; model?: string; temperature?: number } = {}
+  options: MeshRequestOptions = {}
 ): Promise<string> {
-  const apiKey = process.env.MESH_API_KEY;
+  const message = await meshRequestRaw(messages, options);
+  return message.content ?? '';
+}
 
-  if (!apiKey) {
-    console.error('Mesh API Key is missing (MESH_API_KEY)');
-    throw new Error('Mesh API Key is missing');
-  }
+/**
+ * Low-level Mesh call that returns the FULL assistant message (including any
+ * `tool_calls`), so callers can drive a tool-calling loop. Accepts the richer
+ * MeshLoopMessage[] so `tool` result messages can be sent back.
+ */
+async function meshRequestRaw(
+  messages: MeshLoopMessage[],
+  options: MeshRequestOptions = {}
+): Promise<MeshAssistantMessage> {
+  const apiKey = getMeshKey();
 
   const response = await fetch(MESH_API_URL, {
     method: 'POST',
@@ -38,8 +104,10 @@ async function meshRequest(
       model: options.model || DEFAULT_MODEL,
       messages,
       temperature: options.temperature ?? 0.7,
-      max_tokens: 2000,
+      max_tokens: options.maxTokens ?? 2000,
       ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+      ...(options.tools ? { tools: options.tools } : {}),
+      ...(options.tools ? { tool_choice: options.toolChoice ?? 'auto' } : {}),
     }),
   });
 
@@ -50,7 +118,12 @@ async function meshRequest(
   }
 
   const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? '';
+  const message = data.choices?.[0]?.message ?? {};
+  return {
+    role: 'assistant',
+    content: message.content ?? null,
+    tool_calls: message.tool_calls,
+  };
 }
 
 /**
@@ -85,4 +158,125 @@ export async function callMeshText(prompt: string, systemPrompt: string, model?:
  */
 export async function callMeshChat(messages: MeshMessage[], model?: string): Promise<string> {
   return meshRequest(messages, { model });
+}
+
+/**
+ * Vision call — analyze one or more images with a text instruction. Builds an
+ * OpenAI-style multimodal `content` array. Defaults to gpt-4o-mini (cheap and
+ * confirmed to read YouTube thumbnails well). Returns free-form text.
+ */
+export async function callMeshVision(
+  text: string,
+  imageUrls: string[],
+  systemPrompt: string,
+  model: string = 'openai/gpt-4o-mini'
+): Promise<string> {
+  const apiKey = getMeshKey();
+
+  const content = [
+    { type: 'text', text },
+    ...imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
+  ];
+
+  const response = await fetch(MESH_API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content },
+      ],
+      temperature: 0.5,
+      max_tokens: 700,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Mesh vision error:', errorText);
+    throw new Error(`Mesh vision error: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? '';
+}
+
+/**
+ * One step of a tool-calling loop: send the conversation (which may include
+ * `tool` result messages) plus the tool schemas, and get back the raw assistant
+ * message. If it contains `tool_calls`, the caller runs the tools, appends the
+ * results, and calls again. If it contains only `content`, that's the final answer.
+ */
+export async function callMeshWithTools(
+  messages: MeshLoopMessage[],
+  tools: MeshToolSchema[],
+  options: { model?: string; toolChoice?: 'auto' | 'none' | 'required' } = {}
+): Promise<MeshAssistantMessage> {
+  return meshRequestRaw(messages, {
+    tools,
+    toolChoice: options.toolChoice ?? 'auto',
+    model: options.model,
+  });
+}
+
+/**
+ * Streaming chat completion. Yields text deltas as they arrive from Mesh's SSE
+ * stream. Used for the final assistant turn in the Agents chat so tokens appear
+ * in real time.
+ */
+export async function* streamMeshChat(
+  messages: MeshLoopMessage[],
+  options: { model?: string; temperature?: number } = {}
+): AsyncGenerator<string, void, unknown> {
+  const apiKey = getMeshKey();
+
+  const response = await fetch(MESH_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: options.model || DEFAULT_MODEL,
+      messages,
+      temperature: options.temperature ?? 0.7,
+      max_tokens: 2000,
+      stream: true,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const errorText = response.body ? await response.text() : '';
+    console.error('Mesh API stream error:', errorText);
+    throw new Error(`Mesh API stream error: ${response.status} ${response.statusText}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE frames are separated by newlines; each data line is a JSON chunk.
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? ''; // keep the last, possibly-incomplete line
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === '[DONE]') return;
+      try {
+        const json = JSON.parse(payload);
+        const delta = json.choices?.[0]?.delta?.content;
+        if (delta) yield delta;
+      } catch {
+        // Ignore keep-alives / partial frames.
+      }
+    }
+  }
 }
