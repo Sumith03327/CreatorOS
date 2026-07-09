@@ -24,6 +24,7 @@ const key = (...parts: string[]) => [NS, SCHEMA, ...parts].join(':');
 const AGENTS_KEY = key('agents');
 const THUMBS_KEY = key('thumbnails');
 const threadKey = (agentId: string) => key('thread', agentId);
+const memoryKey = (agentId: string) => key('memory', agentId);
 const MIGRATED_FLAG = key('migrated');
 
 // Legacy keys (pre-v2) we migrate from once.
@@ -42,6 +43,8 @@ export interface CustomAgent {
   useYouTubeContext: boolean;
   /** Optional model override; defaults to the cheap deepseek-v3 in the service. */
   model?: string;
+  /** Per-agent toolset (tool names from the agent-tools registry). Empty = all. */
+  tools?: string[];
   /** Durable, distilled facts this agent has learned about the user, injected
    *  into its system prompt so it "remembers" across separate conversations. */
   memory?: string;
@@ -191,16 +194,18 @@ export async function deleteAgent(id: string): Promise<void> {
   const agents = await listAgents();
   await backend.write(AGENTS_KEY, agents.filter((a) => a.id !== id));
   await backend.remove(threadKey(id));
+  await backend.remove(memoryKey(id));
 }
 
-// --- Durable memory (stored on the agent) --------------------------------
+// --- Durable memory (dedicated keyspace, works for custom AND built-in agents) ---
 
 export async function getAgentMemory(id: string): Promise<string> {
-  return (await getAgent(id))?.memory ?? '';
+  return (await backend.read<string>(memoryKey(id))) ?? '';
 }
 
 export async function setAgentMemory(id: string, memory: string): Promise<void> {
-  await updateAgent(id, { memory });
+  if (memory) await backend.write(memoryKey(id), memory);
+  else await backend.remove(memoryKey(id));
 }
 
 // --- Chat threads --------------------------------------------------------

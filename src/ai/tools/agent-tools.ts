@@ -19,6 +19,8 @@ import {
   fetchTranscript,
   searchTrendingVideos,
 } from '@/services/youtube';
+import { analyzeScript } from '@/ai/flows/analyze-script-flow';
+import { getTrendSummary, getTitlePatterns } from '@/ai/flows/get-insane-insights-flow';
 
 // --- Shared helper (mirrors the regex previously inline in run-custom-agent-flow) ---
 
@@ -188,16 +190,145 @@ const searchYouTubeVideos: AgentTool = {
   },
 };
 
+// --- Tool 4: analyze_video_script (wraps the existing analyze-script flow) ---
+
+const analyzeVideoScript: AgentTool = {
+  schema: {
+    type: 'function',
+    function: {
+      name: 'analyze_video_script',
+      description:
+        "Deeply analyze a YouTube video's SCRIPT/structure from its transcript: hook strength (0-10), pacing/structure rating, best moment, likely drop-off points, emotional tone, and concrete improvements. Use this to critique or learn from a video's writing — the user's own or a competitor's.",
+      parameters: {
+        type: 'object',
+        properties: {
+          video: { type: 'string', description: 'A YouTube video URL or 11-character video ID.' },
+        },
+        required: ['video'],
+      },
+    },
+  },
+  async execute(args) {
+    const videoId = extractVideoId(String(args.video ?? '').trim());
+    if (!videoId) return `tool failed: "${args.video}" is not a recognizable YouTube video.`;
+    try {
+      const [details, segments] = await Promise.all([
+        fetchVideoDetails(videoId).catch(() => null),
+        fetchTranscript(videoId),
+      ]);
+      if (!segments.length) return 'tool failed: no transcript/captions available for this video.';
+      const transcript = segments.map((s) => s.text).join(' ');
+      const a = await analyzeScript({ transcript, videoTitle: details?.title || 'Untitled' });
+      return [
+        `Title: ${details?.title || 'Unknown'}`,
+        `Hook: ${a.hook.score}/10 — "${a.hook.text}"`,
+        `Structure: ${a.structure.rating} — ${a.structure.details}`,
+        `Best moment: ${a.bestMoment}`,
+        `Weak spots: ${a.weakSpots.join('; ')}`,
+        `Emotional tone: ${a.emotionalTone}`,
+        `Improvements: ${a.improvements.join('; ')}`,
+      ].join('\n');
+    } catch (e: any) {
+      return `tool failed: ${e?.message || 'error analyzing script'}.`;
+    }
+  },
+};
+
+// --- Tool 5: get_trending_summary (wraps get-insane-insights) ---
+
+const getTrendingSummary: AgentTool = {
+  schema: {
+    type: 'function',
+    function: {
+      name: 'get_trending_summary',
+      description:
+        'Get a punchy 3-bullet summary of what is working RIGHT NOW in a given niche on YouTube. Use to ground ideas, hooks, or strategy in current trends.',
+      parameters: {
+        type: 'object',
+        properties: {
+          niche: { type: 'string', description: 'The content niche or topic (e.g. "beginner Python tutorials", "personal finance").' },
+        },
+        required: ['niche'],
+      },
+    },
+  },
+  async execute(args) {
+    const niche = String(args.niche ?? '').trim();
+    if (!niche) return 'tool failed: no niche provided.';
+    try {
+      const { bullets } = await getTrendSummary({ niche });
+      return `What's working in "${niche}" right now:\n` + bullets.map((b) => `- ${b}`).join('\n');
+    } catch (e: any) {
+      return `tool failed: ${e?.message || 'error fetching trends'}.`;
+    }
+  },
+};
+
+// --- Tool 6: analyze_title_patterns (composite: search + get-title-patterns) ---
+
+const analyzeTitlePatterns: AgentTool = {
+  schema: {
+    type: 'function',
+    function: {
+      name: 'analyze_title_patterns',
+      description:
+        'Discover the TITLE patterns driving views in a niche: searches the current top-performing videos, then extracts 3 concrete patterns (formats, power words, structures) you can reuse. Use before writing or optimizing titles.',
+      parameters: {
+        type: 'object',
+        properties: {
+          niche: { type: 'string', description: 'The content niche or topic to study titles in.' },
+        },
+        required: ['niche'],
+      },
+    },
+  },
+  async execute(args) {
+    const niche = String(args.niche ?? '').trim();
+    if (!niche) return 'tool failed: no niche provided.';
+    try {
+      const publishedAfter = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      const videos = await searchTrendingVideos(niche, publishedAfter, 'all', 'all', 'global', 'viewCount');
+      const titles = videos.slice(0, 15).map((v) => v.title).filter(Boolean);
+      if (!titles.length) return `No recent top videos found for "${niche}" to study.`;
+      const { insights } = await getTitlePatterns({ niche, titles });
+      return (
+        `Title patterns in "${niche}" (from ${titles.length} top videos):\n` +
+        insights.map((i) => `- ${i}`).join('\n') +
+        `\n\nSample titles studied:\n` +
+        titles.slice(0, 6).map((t) => `• ${t}`).join('\n')
+      );
+    } catch (e: any) {
+      return `tool failed: ${e?.message || 'error analyzing title patterns'}.`;
+    }
+  },
+};
+
 // --- Registry ---
 
 const REGISTRY: Record<string, AgentTool> = {
   get_youtube_channel: getYouTubeChannel,
   get_video_transcript: getVideoTranscript,
   search_youtube_videos: searchYouTubeVideos,
+  analyze_video_script: analyzeVideoScript,
+  get_trending_summary: getTrendingSummary,
+  analyze_title_patterns: analyzeTitlePatterns,
 };
 
 /** All tool schemas, to pass to Mesh's `tools` param. */
 export const AGENT_TOOL_SCHEMAS: MeshToolSchema[] = Object.values(REGISTRY).map((t) => t.schema);
+
+/** Names of every registered tool (for building per-agent toolsets in the UI). */
+export const ALL_TOOL_NAMES = Object.keys(REGISTRY);
+
+/**
+ * Resolve a per-agent toolset to Mesh schemas. Pass a list of tool names to
+ * expose only those (unknown names are ignored); pass nothing/empty to expose
+ * ALL tools (backward-compatible default).
+ */
+export function getToolSchemas(names?: string[]): MeshToolSchema[] {
+  if (!names || names.length === 0) return AGENT_TOOL_SCHEMAS;
+  return names.map((n) => REGISTRY[n]?.schema).filter(Boolean) as MeshToolSchema[];
+}
 
 /**
  * Execute a tool call by name. Always resolves to a string (never throws) so the

@@ -34,24 +34,11 @@ import { draftAgent } from '@/ai/flows/draft-agent';
 import { updateAgentMemory } from '@/ai/flows/update-agent-memory';
 import * as store from '@/services/agent-store';
 import type { CustomAgent, ChatMessage } from '@/services/agent-store';
+import { BUILTIN_AGENTS, type BuiltinAgent } from '@/ai/agents/builtin-agents';
 
 // --- Types ---
 
 type View = 'LIST' | 'CREATE' | 'CHAT' | 'STUDIO';
-
-// --- Built-in agents (first-party, pinned in the hub) ---
-
-const BUILTIN_AGENTS = [
-  {
-    id: 'thumbnail-studio',
-    name: 'Thumbnail Studio',
-    category: 'Design',
-    description: "Reads your channel's style, asks a few questions, and designs real thumbnails.",
-    icon: ImageIcon,
-    gradient: 'from-fuchsia-500 to-indigo-500',
-    action: 'STUDIO' as const,
-  },
-];
 
 // --- Templates ---
 
@@ -212,8 +199,26 @@ export default function AgentsPage() {
     }
   }
 
-  function openBuiltin(b: (typeof BUILTIN_AGENTS)[number]) {
-    if (b.action === 'STUDIO') setView('STUDIO');
+  async function openBuiltin(b: BuiltinAgent) {
+    if (b.action === 'STUDIO') {
+      setView('STUDIO');
+      return;
+    }
+    // CHAT built-in: run it through the normal chat loop with its own toolset/model.
+    // Memory persists in-session; the thread persists by the built-in's stable id.
+    const ephemeral: CustomAgent = {
+      id: b.id,
+      name: b.name,
+      category: b.category,
+      description: b.description,
+      instructions: b.instructions ?? '',
+      useYouTubeContext: false,
+      tools: b.tools,
+      model: b.model,
+      memory: await store.getAgentMemory(b.id),
+      createdAt: new Date().toISOString(),
+    };
+    openAgent(ephemeral);
   }
 
   async function handleCreateAgent() {
@@ -241,8 +246,11 @@ export default function AgentsPage() {
   }
 
   async function openAgent(agent: CustomAgent) {
-    setActiveAgent(agent);
+    // Load durable memory from its dedicated store (agent objects may not carry it).
+    const memory = agent.memory ?? (await store.getAgentMemory(agent.id));
+    setActiveAgent({ ...agent, memory });
     setMessages(await store.getThread(agent.id));
+    setShowMemory(false);
     setYoutubeUrl('');
     setView('CHAT');
   }
@@ -300,6 +308,7 @@ export default function AgentsPage() {
           userMessage: userMsg.content,
           memory: agent.memory,
           model: agent.model,
+          tools: agent.tools,
           youtubeUrl: agent.useYouTubeContext ? youtubeUrl : undefined,
         }),
       });

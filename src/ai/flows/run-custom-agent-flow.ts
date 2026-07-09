@@ -15,7 +15,7 @@ import {
   type MeshLoopMessage,
   type MeshAssistantMessage,
 } from '@/services/mesh';
-import { AGENT_TOOL_SCHEMAS, executeTool } from '@/ai/tools/agent-tools';
+import { getToolSchemas, executeTool } from '@/ai/tools/agent-tools';
 import { fetchYouTubeChannelData, fetchVideoDetails } from '@/services/youtube';
 import { extractVideoId } from '@/ai/tools/agent-tools';
 
@@ -25,6 +25,8 @@ export interface RunCustomAgentInput {
   userMessage: string;
   /** Optional model override (defaults to deepseek-v3 in the Mesh service). */
   model?: string;
+  /** Per-agent toolset (tool names). Empty/undefined = all tools. */
+  tools?: string[];
   /** Durable, distilled facts about the user, carried across separate chats.
    *  Folded into the system prompt so the agent "remembers" the user. */
   memory?: string;
@@ -45,6 +47,9 @@ const TOOL_STATUS: Record<string, string> = {
   get_youtube_channel: 'Reading channel data…',
   get_video_transcript: 'Reading the video transcript…',
   search_youtube_videos: 'Searching YouTube…',
+  analyze_video_script: 'Analyzing the script…',
+  get_trending_summary: 'Scanning current trends…',
+  analyze_title_patterns: 'Studying winning titles…',
 };
 
 /** Legacy helper: prepend a one-off YouTube snapshot (kept for backward compat). */
@@ -102,7 +107,7 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
       // Detection call: does the model want to use a tool, or answer now?
-      const resp: MeshAssistantMessage = await callMeshWithTools(messages, AGENT_TOOL_SCHEMAS, {
+      const resp: MeshAssistantMessage = await callMeshWithTools(messages, getToolSchemas(input.tools), {
         model: input.model,
       });
 
