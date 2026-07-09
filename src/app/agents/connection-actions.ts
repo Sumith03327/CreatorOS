@@ -10,12 +10,20 @@ import {
   composioEnabled,
   initiateConnection,
   listConnections,
+  searchToolkits,
   type ConnectionStatus,
+  type Connector,
+  type ToolkitInfo,
 } from '@/services/composio';
+
+/** Search Composio's full catalog (1,000+ apps). */
+export async function searchApps(query: string): Promise<ToolkitInfo[]> {
+  return searchToolkits(query);
+}
 
 export async function getConnectorCatalog(): Promise<{
   enabled: boolean;
-  connectors: { slug: string; name: string }[];
+  connectors: Connector[];
 }> {
   return { enabled: composioEnabled(), connectors: CONNECTORS };
 }

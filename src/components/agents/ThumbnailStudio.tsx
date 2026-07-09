@@ -5,7 +5,6 @@ import {
   Sparkles, ImageIcon, Upload, X, Download, RefreshCw, Loader2, Wand2, Youtube, Check, ChevronLeft, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -26,6 +25,10 @@ const SIZES = [
 ];
 
 type Step = 'input' | 'refine' | 'results';
+
+// Dark-theme input styling for the Command Center.
+const DARK_INPUT =
+  'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
 export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
   const [step, setStep] = useState<Step>('input');
@@ -176,65 +179,64 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
   return (
     <div className="max-w-5xl mx-auto space-y-6 py-2 animate-in fade-in">
       <div className="flex items-center gap-4">
-        <Button variant="ghost" size="icon" onClick={onBack}><ChevronLeft className="h-5 w-5" /></Button>
-        <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-fuchsia-500 to-indigo-500 flex items-center justify-center shrink-0">
+        <Button variant="ghost" size="icon" onClick={onBack} className="text-slate-300 hover:text-white hover:bg-white/5"><ChevronLeft className="h-5 w-5" /></Button>
+        <div className="h-11 w-11 rounded-2xl bg-gradient-to-br from-fuchsia-500 to-indigo-500 flex items-center justify-center shrink-0 cc-glow">
           <ImageIcon className="h-5 w-5 text-white" />
         </div>
         <div>
-          <h2 className="font-bold text-lg text-slate-900">Thumbnail Studio</h2>
-          <p className="text-xs text-slate-500">Reads your channel’s style, asks a few questions, then designs.</p>
+          <h2 className="font-semibold text-lg text-white">Thumbnail Studio</h2>
+          <p className="text-xs text-slate-400">Reads your channel’s style and face, then designs on-brand thumbnails.</p>
         </div>
       </div>
 
       {/* STEP 1 — inputs */}
       {step === 'input' && (
-        <Card className="border-none shadow-sm">
-          <CardContent className="p-6 space-y-5">
+        <div className="cc-card p-6 space-y-5">
             <div className="space-y-2">
-              <Label>Your channel <span className="text-slate-400 font-normal">(optional — for style matching)</span></Label>
-              <div className="flex items-center gap-2 bg-slate-50 rounded-xl px-3">
+              <Label className="text-slate-300">Your channel <span className="text-slate-500 font-normal">(optional — for style matching)</span></Label>
+              <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3">
                 <Youtube className="h-4 w-4 text-red-500 shrink-0" />
                 <Input
                   placeholder="https://youtube.com/@yourchannel"
                   value={channelUrl}
                   onChange={(e) => setChannelUrl(e.target.value)}
-                  className="border-none bg-transparent shadow-none focus-visible:ring-0 px-0"
+                  className="border-none bg-transparent shadow-none focus-visible:ring-0 px-0 text-white placeholder:text-slate-500"
                 />
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Video title or topic</Label>
-              <Input placeholder="e.g., I Survived 100 Hours in the Wild" value={title} onChange={(e) => setTitle(e.target.value)} />
+              <Label className="text-slate-300">Video title or topic</Label>
+              <Input placeholder="e.g., I Survived 100 Hours in the Wild" value={title} onChange={(e) => setTitle(e.target.value)} className={DARK_INPUT} />
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Aspect ratio</Label>
+                <Label className="text-slate-300">Aspect ratio</Label>
                 <Select value={size} onValueChange={setSize}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="bg-white/5 border-white/10 text-white"><SelectValue /></SelectTrigger>
                   <SelectContent>{SIZES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Variations</Label>
+                <Label className="text-slate-300">Variations</Label>
                 <Select value={count} onValueChange={setCount}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectTrigger className="bg-white/5 border-white/10 text-white"><SelectValue /></SelectTrigger>
                   <SelectContent>{['1', '2', '3', '4'].map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Your face or logo <span className="text-slate-400 font-normal">(optional)</span></Label>
+              <Label className="text-slate-300">Your face or logo <span className="text-slate-500 font-normal">(optional)</span></Label>
               {facePreview ? (
-                <div className="relative w-full h-28 rounded-xl overflow-hidden border">
+                <div className="relative w-full h-28 rounded-xl overflow-hidden border border-white/10">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={facePreview} alt="reference" className="w-full h-full object-cover" />
                   <button onClick={clearFace} className="absolute top-2 right-2 h-7 w-7 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"><X className="h-4 w-4" /></button>
                 </div>
               ) : (
-                <button onClick={() => fileInputRef.current?.click()} className="w-full h-28 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-primary/50 hover:text-primary transition-colors">
+                <button onClick={() => fileInputRef.current?.click()} className="w-full h-28 rounded-xl border-2 border-dashed border-white/15 flex flex-col items-center justify-center gap-2 text-slate-400 hover:border-primary/50 hover:text-primary transition-colors">
                   <Upload className="h-5 w-5" />
                   <span className="text-xs">Upload a photo to feature yourself</span>
                 </button>
@@ -242,52 +244,48 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
               <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onPickFace} />
             </div>
 
-            <Button className="w-full gap-2" onClick={analyzeAndContinue} disabled={analyzing}>
+            <Button className="w-full gap-2 cc-glow" onClick={analyzeAndContinue} disabled={analyzing}>
               {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {analyzing ? (channelUrl.trim() ? 'Reading your thumbnails…' : 'Thinking…') : 'Analyze & Continue'}
             </Button>
-          </CardContent>
-        </Card>
+        </div>
       )}
 
       {/* STEP 2 — refine (style + questions) */}
       {step === 'refine' && (
         <div className="space-y-5">
           {(styleProfile || samples.length > 0) && (
-            <Card className="border-none shadow-sm bg-gradient-to-br from-indigo-50 to-fuchsia-50">
-              <CardContent className="p-5 space-y-3">
-                <div className="flex items-center gap-2 text-sm font-bold text-slate-800">
-                  <Check className="h-4 w-4 text-emerald-500" /> Detected {channelTitle ? `${channelTitle}'s` : 'the'} thumbnail style
+            <div className="cc-card p-5 space-y-3 border-primary/20">
+                <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <Check className="h-4 w-4 text-emerald-400" /> Detected {channelTitle ? `${channelTitle}'s` : 'the'} thumbnail style
                 </div>
                 {samples.length > 0 && (
                   <div className="flex gap-2 overflow-x-auto pb-1">
                     {samples.map((s, i) => (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img key={i} src={s} alt="sample" className="h-16 rounded-lg object-cover shrink-0" />
+                      <img key={i} src={s} alt="sample" className="h-16 rounded-lg object-cover shrink-0 border border-white/10" />
                     ))}
                   </div>
                 )}
-                <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{styleProfile}</p>
+                <p className="text-xs text-slate-400 whitespace-pre-wrap leading-relaxed">{styleProfile}</p>
 
                 {isFaceDriven && !faceFile && (
-                  <div className="flex items-center justify-between gap-3 rounded-xl bg-white/70 p-3">
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 p-3">
                     <div>
-                      <p className="text-xs font-bold text-slate-800">Feature you (from your channel)</p>
+                      <p className="text-xs font-semibold text-slate-200">Feature you (from your channel)</p>
                       <p className="text-[11px] text-slate-500">We spotted a recurring creator — we’ll reproduce your face. No photo upload needed.</p>
                     </div>
                     <Switch checked={featureMe} onCheckedChange={setFeatureMe} />
                   </div>
                 )}
-              </CardContent>
-            </Card>
+            </div>
           )}
 
-          <Card className="border-none shadow-sm">
-            <CardContent className="p-6 space-y-5">
-              <p className="text-sm font-bold text-slate-800">A few quick choices</p>
+          <div className="cc-card p-6 space-y-5">
+              <p className="text-sm font-semibold text-white">A few quick choices</p>
               {questions.map((q, qi) => (
                 <div key={qi} className="space-y-2">
-                  <Label className="text-slate-700">{q.question}</Label>
+                  <Label className="text-slate-300">{q.question}</Label>
                   <div className="flex flex-wrap gap-2">
                     {q.options.map((opt) => (
                       <button
@@ -297,7 +295,7 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
                           'px-3 py-1.5 rounded-full text-xs font-medium border transition-all',
                           answers[q.question] === opt
                             ? 'bg-primary text-white border-primary'
-                            : 'bg-white text-slate-600 border-slate-200 hover:border-primary/50'
+                            : 'bg-white/5 text-slate-300 border-white/10 hover:border-primary/50'
                         )}
                       >
                         {opt}
@@ -306,25 +304,24 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
                   </div>
                   <Input
                     placeholder="…or type your own"
-                    className="h-8 text-xs"
+                    className={cn('h-8 text-xs', DARK_INPUT)}
                     value={answers[q.question] && !q.options.includes(answers[q.question]) ? answers[q.question] : ''}
                     onChange={(e) => setAnswers((a) => ({ ...a, [q.question]: e.target.value }))}
                   />
                 </div>
               ))}
               <div className="space-y-2">
-                <Label className="text-slate-700">Anything else? <span className="text-slate-400 font-normal">(optional)</span></Label>
-                <Textarea placeholder="e.g., add a jungle background, use green and yellow" className="min-h-[60px]" value={notes} onChange={(e) => setNotes(e.target.value)} />
+                <Label className="text-slate-300">Anything else? <span className="text-slate-500 font-normal">(optional)</span></Label>
+                <Textarea placeholder="e.g., add a jungle background, use green and yellow" className={cn('min-h-[60px]', DARK_INPUT)} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </div>
 
               <div className="flex gap-2">
-                <Button variant="outline" className="gap-2" onClick={() => setStep('input')}><ChevronLeft className="h-4 w-4" /> Back</Button>
-                <Button className="flex-1 gap-2" onClick={generate} disabled={loading}>
+                <Button variant="outline" className="gap-2 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white" onClick={() => setStep('input')}><ChevronLeft className="h-4 w-4" /> Back</Button>
+                <Button className="flex-1 gap-2 cc-glow" onClick={generate} disabled={loading}>
                   <Wand2 className="h-4 w-4" /> Generate Thumbnails
                 </Button>
               </div>
-            </CardContent>
-          </Card>
+          </div>
         </div>
       )}
 
@@ -333,26 +330,26 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
         <div className="space-y-4">
           {loading ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {Array.from({ length: n }).map((_, i) => <Skeleton key={i} className="w-full aspect-video rounded-xl" />)}
+              {Array.from({ length: n }).map((_, i) => <Skeleton key={i} className="w-full aspect-video rounded-xl bg-white/5" />)}
             </div>
           ) : (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {images.map((src, i) => (
-                  <Card key={i} className="border-none shadow-sm overflow-hidden">
+                  <div key={i} className="cc-card overflow-hidden">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img src={src} alt={`thumbnail ${i + 1}`} className="w-full aspect-video object-cover" />
                     <div className="p-3">
-                      <Button variant="outline" size="sm" className="w-full gap-1.5" onClick={() => download(src, i)}>
+                      <Button variant="outline" size="sm" className="w-full gap-1.5 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white" onClick={() => download(src, i)}>
                         <Download className="h-3.5 w-3.5" /> Download
                       </Button>
                     </div>
-                  </Card>
+                  </div>
                 ))}
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" className="gap-2" onClick={() => setStep('refine')}><ChevronLeft className="h-4 w-4" /> Tweak choices</Button>
-                <Button className="gap-2" onClick={generate} disabled={loading}><RefreshCw className="h-4 w-4" /> Regenerate</Button>
+                <Button variant="outline" className="gap-2 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white" onClick={() => setStep('refine')}><ChevronLeft className="h-4 w-4" /> Tweak choices</Button>
+                <Button className="gap-2 cc-glow" onClick={generate} disabled={loading}><RefreshCw className="h-4 w-4" /> Regenerate</Button>
               </div>
             </>
           )}
@@ -362,13 +359,15 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
       {/* Persisted gallery — previously generated thumbnails, survive refresh */}
       {gallery.length > 0 && (
         <section className="space-y-3 pt-2">
-          <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Your Thumbnails</h3>
+          <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-400">
+            <span className="h-3 w-0.5 rounded bg-fuchsia-400" /> Your Thumbnails
+          </h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
             {gallery.map((t) => (
-              <div key={t.id} className="group relative rounded-xl overflow-hidden border shadow-sm">
+              <div key={t.id} className="group relative rounded-xl overflow-hidden border border-white/10">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={t.src} alt={t.title} className="w-full aspect-video object-cover" />
-                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
+                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
                   <div className="flex justify-end gap-1">
                     <button
                       onClick={() => download(t.src, 0)}

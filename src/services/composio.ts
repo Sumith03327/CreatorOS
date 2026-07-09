@@ -19,18 +19,61 @@ import type { MeshToolSchema } from '@/services/mesh';
 
 const COMPOSIO_USER_ID = 'creator-hub-user';
 
+export interface Connector {
+  slug: string;
+  name: string;
+  /** Official brand logo, served by Composio's logo CDN. */
+  logo: string;
+}
+
 /** Connectors we surface in the Connections UI (curated from Composio's 250+). */
-export const CONNECTORS: { slug: string; name: string }[] = [
-  { slug: 'gmail', name: 'Gmail' },
-  { slug: 'googlesheets', name: 'Google Sheets' },
-  { slug: 'googledocs', name: 'Google Docs' },
-  { slug: 'notion', name: 'Notion' },
-  { slug: 'googlecalendar', name: 'Google Calendar' },
-  { slug: 'slack', name: 'Slack' },
+export const CONNECTORS: Connector[] = [
+  { slug: 'gmail', name: 'Gmail', logo: 'https://logos.composio.dev/api/gmail' },
+  { slug: 'googlesheets', name: 'Google Sheets', logo: 'https://logos.composio.dev/api/googlesheets' },
+  { slug: 'googledocs', name: 'Google Docs', logo: 'https://logos.composio.dev/api/googledocs' },
+  { slug: 'notion', name: 'Notion', logo: 'https://logos.composio.dev/api/notion' },
+  { slug: 'googlecalendar', name: 'Google Calendar', logo: 'https://logos.composio.dev/api/googlecalendar' },
+  { slug: 'slack', name: 'Slack', logo: 'https://logos.composio.dev/api/slack' },
 ];
 
 export function composioEnabled(): boolean {
   return !!process.env.COMPOSIO_API_KEY;
+}
+
+export interface ToolkitInfo {
+  slug: string;
+  name: string;
+  logo: string;
+  toolsCount?: number;
+  /** True if Composio manages the OAuth for this app (so one-click connect works). */
+  managedAuth: boolean;
+}
+
+/**
+ * Search Composio's full catalog (1,000+ apps). Empty query returns the most
+ * popular apps. Uses the REST endpoint directly for a compact, stable shape.
+ */
+export async function searchToolkits(query: string, limit = 24): Promise<ToolkitInfo[]> {
+  const apiKey = process.env.COMPOSIO_API_KEY;
+  if (!apiKey) return [];
+  const url = new URL('https://backend.composio.dev/api/v3/toolkits');
+  if (query.trim()) url.searchParams.set('search', query.trim());
+  url.searchParams.set('limit', String(limit));
+  try {
+    const res = await fetch(url, { headers: { 'x-api-key': apiKey } });
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    return (data.items ?? []).map((t: any) => ({
+      slug: t.slug,
+      name: t.name,
+      logo: t.meta?.logo || `https://logos.composio.dev/api/${t.slug}`,
+      toolsCount: t.meta?.tools_count,
+      managedAuth: Array.isArray(t.composio_managed_auth_schemes) && t.composio_managed_auth_schemes.length > 0,
+    }));
+  } catch (e) {
+    console.error('searchToolkits failed:', e);
+    return [];
+  }
 }
 
 let _client: Composio | null = null;

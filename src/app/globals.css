@@ -43,3 +43,70 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ============================================================
+   Agent Command Center — dark, AI-native design system
+   Scoped under .command-center so the rest of the app stays light.
+   ============================================================ */
+@layer components {
+  .command-center {
+    background:
+      radial-gradient(55rem 38rem at 12% -8%, hsl(253 85% 60% / 0.20), transparent 60%),
+      radial-gradient(48rem 38rem at 108% -6%, hsl(292 80% 60% / 0.14), transparent 55%),
+      radial-gradient(60rem 50rem at 50% 120%, hsl(224 85% 60% / 0.10), transparent 60%),
+      hsl(240 32% 6%);
+    color: hsl(240 8% 88%);
+  }
+  /* faint grid, faded toward edges */
+  .command-center::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(hsl(0 0% 100% / 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, hsl(0 0% 100% / 0.035) 1px, transparent 1px);
+    background-size: 46px 46px;
+    -webkit-mask-image: radial-gradient(75% 60% at 50% 0%, #000, transparent 85%);
+    mask-image: radial-gradient(75% 60% at 50% 0%, #000, transparent 85%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* glassmorphic card */
+  .cc-card {
+    background: hsl(240 24% 12% / 0.55);
+    border: 1px solid hsl(0 0% 100% / 0.08);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    border-radius: 1.1rem;
+    transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  }
+  .cc-card-hover:hover {
+    transform: translateY(-3px);
+    border-color: hsl(253 85% 68% / 0.55);
+    box-shadow:
+      0 0 0 1px hsl(253 85% 65% / 0.25),
+      0 18px 50px -18px hsl(253 90% 60% / 0.55);
+  }
+
+  /* glowing gradient icon tile */
+  .cc-glow {
+    box-shadow: 0 10px 30px -8px hsl(253 90% 62% / 0.65);
+  }
+
+  /* pulsing hero orb */
+  .cc-orb {
+    background: radial-gradient(circle at 32% 30%, hsl(253 92% 72% / 0.95), hsl(292 85% 62% / 0.55) 45%, transparent 70%);
+    filter: blur(26px);
+    animation: cc-pulse 6.5s ease-in-out infinite;
+  }
+  @keyframes cc-pulse {
+    0%, 100% { opacity: 0.65; transform: scale(1); }
+    50% { opacity: 1; transform: scale(1.09); }
+  }
+
+  /* live status dot */
+  .cc-dot {
+    box-shadow: 0 0 0 3px hsl(152 70% 45% / 0.18), 0 0 10px hsl(152 70% 50% / 0.9);
+  }
+}
