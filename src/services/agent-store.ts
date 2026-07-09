@@ -47,6 +47,8 @@ export interface CustomAgent {
   tools?: string[];
   /** Composio connector toolkits this agent can act through (e.g. ['gmail']). */
   connectors?: string[];
+  /** Expert skill playbooks this agent can load on demand. */
+  skills?: string[];
   /** Durable, distilled facts this agent has learned about the user, injected
    *  into its system prompt so it "remembers" across separate conversations. */
   memory?: string;

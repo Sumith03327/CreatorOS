@@ -285,6 +285,7 @@ export default function AgentsPage() {
       useYouTubeContext: false,
       tools: b.tools,
       connectors: b.connectors,
+      skills: b.skills,
       model: b.model,
       memory: await store.getAgentMemory(b.id),
       createdAt: new Date().toISOString(),
@@ -381,6 +382,7 @@ export default function AgentsPage() {
           model: agent.model,
           tools: agent.tools,
           connectors: agent.connectors,
+          skills: agent.skills,
           youtubeUrl: agent.useYouTubeContext ? youtubeUrl : undefined,
         }),
       });

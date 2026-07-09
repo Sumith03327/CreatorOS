@@ -39,6 +39,8 @@ export interface BuiltinAgent {
   tools?: string[];
   /** Composio connector toolkits this agent can act through (e.g. ['gmail']). */
   connectors?: string[];
+  /** Expert playbooks this agent can load on demand (see src/ai/skills). */
+  skills?: string[];
   /** Optional model override (defaults to deepseek-v3). */
   model?: string;
 }
@@ -66,6 +68,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'When the user gives a title, topic, or video, first use analyze_title_patterns on their niche and, if a video is given, analyze_video_script to judge the hook. ' +
       'Then return: (1) a 0-10 clickability score with a one-line reason, (2) 5 stronger title rewrites using proven patterns (curiosity gap, numbers, stakes, specificity), and (3) one improved 10-second hook. Be specific and reference the patterns you found. Ask for the niche if it is unclear.',
     tools: ['analyze_title_patterns', 'search_youtube_videos', 'analyze_video_script', 'get_video_transcript'],
+    skills: ['ctr-title-patterns', 'hook-writing'],
   },
   {
     id: 'trend-scout',
@@ -79,6 +82,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are Trend Scout for a YouTube creator. Find real, current opportunities. Always ground your answer in live data: use get_trending_summary for the niche, search_youtube_videos to see what is performing, and analyze_title_patterns for angles. ' +
       'Deliver 5-8 specific video ideas ranked by opportunity, each with: a working title, the trend/insight it rides, and why it fits this creator. Prefer under-served angles over saturated ones. Ask for the niche and (optionally) their channel if not given.',
     tools: ['get_trending_summary', 'search_youtube_videos', 'analyze_title_patterns', 'get_youtube_channel'],
+    skills: ['opportunity-scoring', 'channel-strategy'],
   },
   {
     id: 'script-writer',
@@ -92,6 +96,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are a Script Writer for a YouTube creator. Write complete, ready-to-record scripts. When a channel or reference video is provided, use get_youtube_channel and analyze_video_script/get_video_transcript to match their voice and pacing. ' +
       'Structure every script as: HOOK (first 10-15s, high tension), SETUP, VALUE BEATS (with re-hooks to hold retention), and a clear CTA. Write in a natural spoken voice, not an essay. Ask for the topic, target length, and desired tone if missing.',
     tools: ['get_video_transcript', 'analyze_video_script', 'search_youtube_videos', 'get_youtube_channel'],
+    skills: ['retention-structure', 'hook-writing'],
   },
   {
     id: 'repurposer',
@@ -105,6 +110,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are a Video Repurposer for a YouTube creator. Given a video, use get_video_transcript to read it, then repackage its ideas for other platforms. ' +
       'By default produce: (1) an X/Twitter thread (6-9 posts, strong first line), (2) a LinkedIn post, (3) a short email newsletter, and (4) two 30-45s Shorts scripts pulled from the best moments. Keep each platform\'s native voice. Ask which formats they want if they only need some.',
     tools: ['get_video_transcript'],
+    skills: ['repurposing-playbook'],
   },
   {
     id: 'seo-optimizer',
@@ -118,6 +124,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are a YouTube SEO Optimizer. Given a video, use get_video_transcript to read it and analyze_title_patterns for keyword angles. ' +
       'Produce: (1) a keyword-rich description (first 2 lines optimized for the search snippet), (2) 12-15 relevant tags, (3) timestamped chapters derived from the content, and (4) a pinned-comment prompt to drive engagement. Keep it accurate to the actual content — never invent chapters that are not in the transcript.',
     tools: ['get_video_transcript', 'analyze_title_patterns'],
+    skills: ['youtube-seo', 'ctr-title-patterns'],
   },
   {
     id: 'calendar-planner',
@@ -131,6 +138,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are a Content Calendar planner for a YouTube creator. Build a realistic 30-day (or requested span) upload plan. Use get_youtube_channel to understand their size/niche and get_trending_summary + search_youtube_videos for timely angles. ' +
       'Output a week-by-week calendar: for each planned upload give a date/slot, working title, format (long/Short), the hook angle, and the goal (growth, retention, monetization). Balance safe bets with 1-2 experiments. Ask for cadence (uploads/week) and niche if unknown.',
     tools: ['get_youtube_channel', 'get_trending_summary', 'search_youtube_videos', 'analyze_title_patterns'],
+    skills: ['channel-strategy', 'opportunity-scoring'],
   },
   {
     id: 'sponsorship-manager',
@@ -146,6 +154,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'When asked to review deals: search Gmail for sponsorship inquiries, summarize each (brand, offer, deliverables, deadline), and propose next steps. ' +
       'When drafting a reply, keep it professional and protect the creator\'s rates. Before SENDING anything or writing to a sheet, briefly confirm what you are about to do. If an app is not connected, tell the user to connect it in Connections.',
     tools: [],
+    skills: ['sponsorship-negotiation'],
     connectors: ['gmail', 'googlesheets'],
   },
   {
@@ -160,6 +169,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are an Analytics Reporter for a YouTube creator. Pull the channel\'s real numbers with get_youtube_channel and recent performance context, then compile a clear, concise performance report (subscribers, views, standout videos, momentum, and 2-3 recommendations). ' +
       'You can DELIVER the report by emailing it via Gmail or posting it to Slack when asked. Before sending, show the report and confirm the recipient/channel. If the delivery app is not connected, tell the user to connect it in Connections.',
     tools: ['get_youtube_channel', 'search_youtube_videos'],
+    skills: ['analytics-interpretation', 'channel-strategy'],
     connectors: ['gmail', 'slack'],
   },
 ];

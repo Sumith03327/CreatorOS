@@ -17,6 +17,8 @@ import {
 } from '@/services/mesh';
 import { getToolSchemas, executeTool } from '@/ai/tools/agent-tools';
 import { getComposioTools, executeComposioTool, listConnections } from '@/services/composio';
+import { resolveSkills, buildSkillIndex, getSkill } from '@/ai/skills';
+import type { MeshToolSchema } from '@/services/mesh';
 import { fetchYouTubeChannelData, fetchVideoDetails } from '@/services/youtube';
 import { extractVideoId } from '@/ai/tools/agent-tools';
 
@@ -30,6 +32,8 @@ export interface RunCustomAgentInput {
   tools?: string[];
   /** Composio connector toolkits this agent may act through (e.g. ['gmail','googlesheets']). */
   connectors?: string[];
+  /** Expert skill playbooks this agent may load on demand (see src/ai/skills). */
+  skills?: string[];
   /** Durable, distilled facts about the user, carried across separate chats.
    *  Folded into the system prompt so the agent "remembers" the user. */
   memory?: string;
@@ -43,7 +47,9 @@ export type AgentEvent =
   | { type: 'text'; content: string } // a chunk of the final answer
   | { type: 'error'; content: string };
 
-const MAX_STEPS = 5;
+// Raised from 5: loading a skill consumes a step, and agents should still have
+// room to research with their tools afterwards.
+const MAX_STEPS = 8;
 
 // Friendly labels for the "🔧 …" status chips shown while tools run.
 const TOOL_STATUS: Record<string, string> = {
@@ -88,16 +94,45 @@ async function buildYouTubeContext(url: string): Promise<string | null> {
 }
 
 function buildSystemPrompt(input: RunCustomAgentInput): string {
+  let prompt = input.instructions;
+
   const memory = input.memory?.trim();
-  if (!memory) return input.instructions;
-  // The agent's own instructions come first; remembered facts are appended as a
-  // clearly-fenced block so the model treats them as known context, not orders.
-  return (
-    `${input.instructions}\n\n` +
-    `--- WHAT YOU REMEMBER ABOUT THIS USER (from previous conversations) ---\n` +
-    `${memory}\n` +
-    `Use this context naturally when relevant; don't recite it back or mention that you "remember" unless asked.`
-  );
+  if (memory) {
+    // The agent's own instructions come first; remembered facts are appended as a
+    // clearly-fenced block so the model treats them as known context, not orders.
+    prompt +=
+      `\n\n--- WHAT YOU REMEMBER ABOUT THIS USER (from previous conversations) ---\n` +
+      `${memory}\n` +
+      `Use this context naturally when relevant; don't recite it back or mention that you "remember" unless asked.`;
+  }
+
+  // Progressive disclosure: index only. Full playbooks arrive via `load_skill`.
+  prompt += buildSkillIndex(resolveSkills(input.skills));
+
+  return prompt;
+}
+
+/** The `load_skill` tool, scoped to the skills THIS agent is allowed to read. */
+function buildLoadSkillSchema(skillNames: string[]): MeshToolSchema {
+  return {
+    type: 'function',
+    function: {
+      name: 'load_skill',
+      description:
+        'Load the full expert playbook for one of your skills. Call this before doing substantive work the skill covers, then follow the playbook closely.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: {
+            type: 'string',
+            enum: skillNames,
+            description: 'The skill name to load, exactly as listed in YOUR SKILLS.',
+          },
+        },
+        required: ['skill'],
+      },
+    },
+  };
 }
 
 function buildInitialMessages(input: RunCustomAgentInput, userContent: string): MeshLoopMessage[] {
@@ -144,7 +179,11 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
       console.error('Composio tools unavailable:', e);
     }
   }
-  const toolSchemas = [...localSchemas, ...composioSchemas];
+  // Skills: expose `load_skill` only when this agent actually has skills.
+  const agentSkills = resolveSkills(input.skills);
+  const skillSchemas = agentSkills.length ? [buildLoadSkillSchema(agentSkills.map((s) => s.name))] : [];
+
+  const toolSchemas = [...localSchemas, ...composioSchemas, ...skillSchemas];
   const composioNames = new Set(composioSchemas.map((s) => s.function.name));
 
   try {
@@ -160,17 +199,31 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
         for (const call of resp.tool_calls) {
           const name = call.function.name;
           const isComposio = composioNames.has(name);
-          yield {
-            type: 'status',
-            content: TOOL_STATUS[name] ?? (isComposio ? `Acting via ${prettyConnector(name)}…` : `Running ${name}…`),
-          };
+
+          // Parse args first so the status chip can name the skill being loaded.
           let args: Record<string, any> = {};
           try {
             args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
           } catch {
             args = {};
           }
-          const result = isComposio ? await executeComposioTool(name, args) : await executeTool(name, args);
+
+          let result: string;
+          if (name === 'load_skill') {
+            const requested = String(args.skill ?? '');
+            const skill = agentSkills.find((s) => s.name === requested) ? getSkill(requested) : null;
+            yield { type: 'status', content: `Loading skill: ${skill?.title ?? requested}…` };
+            result = skill
+              ? skill.content
+              : `tool failed: "${requested}" is not one of your skills. Available: ${agentSkills.map((s) => s.name).join(', ')}.`;
+          } else {
+            yield {
+              type: 'status',
+              content: TOOL_STATUS[name] ?? (isComposio ? `Acting via ${prettyConnector(name)}…` : `Running ${name}…`),
+            };
+            result = isComposio ? await executeComposioTool(name, args) : await executeTool(name, args);
+          }
+
           messages.push({ role: 'tool', tool_call_id: call.id, content: result });
         }
         continue; // loop again with tool results in context
