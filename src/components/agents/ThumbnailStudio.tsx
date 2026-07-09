@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
-  Sparkles, ImageIcon, Upload, X, Download, RefreshCw, Loader2, Wand2, Youtube, Check, ChevronLeft,
+  Sparkles, ImageIcon, Upload, X, Download, RefreshCw, Loader2, Wand2, Youtube, Check, ChevronLeft, Trash2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,14 +16,14 @@ import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { analyzeChannelStyle } from '@/ai/flows/analyze-channel-style';
 import { generateThumbnailQuestions, type ThumbnailQuestion } from '@/ai/flows/thumbnail-questions';
+import * as store from '@/services/agent-store';
+import type { SavedThumbnail } from '@/services/agent-store';
 
 const SIZES = [
   { value: '1536x1024', label: 'Wide 16:9-ish (1536×1024)' },
   { value: '1024x1024', label: 'Square (1024×1024)' },
   { value: '1024x1536', label: 'Tall (1024×1536)' },
 ];
-
-const HISTORY_KEY = 'creator-hub-thumbnails';
 
 type Step = 'input' | 'refine' | 'results';
 
@@ -54,6 +54,12 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
   // Generation
   const [loading, setLoading] = useState(false);
   const [images, setImages] = useState<string[]>([]);
+
+  // Persisted gallery of previously generated thumbnails
+  const [gallery, setGallery] = useState<SavedThumbnail[]>([]);
+  useEffect(() => {
+    store.listThumbnails().then(setGallery);
+  }, []);
 
   function onPickFace(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -136,9 +142,13 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
       if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
       const next: string[] = data.images ?? [];
       setImages(next);
-      try {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-      } catch {}
+      if (next.length) {
+        const updated = await store.addThumbnails(next, {
+          title: title.trim(),
+          channelTitle: channelTitle || undefined,
+        });
+        setGallery(updated);
+      }
     } catch (err: any) {
       console.error(err);
       toast({ variant: 'destructive', title: 'Generation failed', description: err?.message || 'Try again.' });
@@ -155,6 +165,10 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  async function removeFromGallery(id: string) {
+    setGallery(await store.removeThumbnail(id));
   }
 
   const n = parseInt(count, 10) || 2;
@@ -343,6 +357,40 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
             </>
           )}
         </div>
+      )}
+
+      {/* Persisted gallery — previously generated thumbnails, survive refresh */}
+      {gallery.length > 0 && (
+        <section className="space-y-3 pt-2">
+          <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Your Thumbnails</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+            {gallery.map((t) => (
+              <div key={t.id} className="group relative rounded-xl overflow-hidden border shadow-sm">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={t.src} alt={t.title} className="w-full aspect-video object-cover" />
+                <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-between p-2">
+                  <div className="flex justify-end gap-1">
+                    <button
+                      onClick={() => download(t.src, 0)}
+                      className="h-7 w-7 rounded-full bg-white/90 text-slate-700 hover:bg-white flex items-center justify-center"
+                      title="Download"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      onClick={() => removeFromGallery(t.id)}
+                      className="h-7 w-7 rounded-full bg-white/90 text-slate-700 hover:text-destructive hover:bg-white flex items-center justify-center"
+                      title="Remove"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-white/90 line-clamp-2 leading-tight">{t.title}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

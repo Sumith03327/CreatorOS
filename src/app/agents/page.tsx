@@ -16,6 +16,7 @@ import {
   Youtube,
   Wand2,
   ArrowRight,
+  Brain,
 } from 'lucide-react';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { Button } from '@/components/ui/button';
@@ -160,6 +161,7 @@ export default function AgentsPage() {
   const [youtubeUrl, setYoutubeUrl] = useState('');
   const [sending, setSending] = useState(false);
   const [statusText, setStatusText] = useState('');
+  const [showMemory, setShowMemory] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -214,42 +216,60 @@ export default function AgentsPage() {
     if (b.action === 'STUDIO') setView('STUDIO');
   }
 
-  function handleCreateAgent() {
+  async function handleCreateAgent() {
     if (!formName.trim() || !formInstructions.trim()) {
       toast({ variant: 'destructive', title: 'Missing info', description: 'Give your agent a name and instructions.' });
       return;
     }
-    const newAgent: CustomAgent = {
-      id: Math.random().toString(36).slice(2),
+    const newAgent = await store.createAgent({
       name: formName.trim(),
       category: formCategory,
       description: formDescription.trim(),
       instructions: formInstructions.trim(),
       useYouTubeContext: formUseYouTube,
-      createdAt: new Date().toISOString(),
-    };
-    const updated = [newAgent, ...agents];
-    setAgents(updated);
-    saveAgents(updated);
+    });
+    setAgents(await store.listAgents());
     resetForm();
     toast({ title: 'Agent created', description: `${newAgent.name} is ready to use.` });
     openAgent(newAgent);
   }
 
-  function deleteAgent(id: string) {
-    const updated = agents.filter((a) => a.id !== id);
-    setAgents(updated);
-    saveAgents(updated);
-    localStorage.removeItem(chatKey(id));
+  async function handleDeleteAgent(id: string) {
+    await store.deleteAgent(id);
+    setAgents(await store.listAgents());
     toast({ title: 'Agent deleted' });
   }
 
-  function openAgent(agent: CustomAgent) {
+  async function openAgent(agent: CustomAgent) {
     setActiveAgent(agent);
-    const saved = localStorage.getItem(chatKey(agent.id));
-    setMessages(saved ? JSON.parse(saved) : []);
+    setMessages(await store.getThread(agent.id));
     setYoutubeUrl('');
     setView('CHAT');
+  }
+
+  /** Distill durable memory from a conversation and persist it on the agent.
+   *  Throttled to keep cost low: runs on the first exchange, then every 3rd
+   *  user turn. Fully background — never blocks or breaks the chat. */
+  async function refreshMemory(agent: CustomAgent, msgs: ChatMessage[]) {
+    const userTurns = msgs.filter((m) => m.role === 'user').length;
+    if (userTurns !== 1 && userTurns % 3 !== 0) return;
+    try {
+      const updated = await updateAgentMemory({ existingMemory: agent.memory ?? '', messages: msgs });
+      if (updated === (agent.memory ?? '')) return;
+      await store.setAgentMemory(agent.id, updated);
+      setAgents((prev) => prev.map((a) => (a.id === agent.id ? { ...a, memory: updated } : a)));
+      setActiveAgent((prev) => (prev && prev.id === agent.id ? { ...prev, memory: updated } : prev));
+    } catch (e) {
+      console.error('memory refresh failed (non-fatal):', e);
+    }
+  }
+
+  async function handleClearMemory() {
+    if (!activeAgent) return;
+    await store.setAgentMemory(activeAgent.id, '');
+    setAgents((prev) => prev.map((a) => (a.id === activeAgent.id ? { ...a, memory: '' } : a)));
+    setActiveAgent((prev) => (prev ? { ...prev, memory: '' } : prev));
+    toast({ title: 'Memory cleared', description: `${activeAgent.name} forgot what it knew about you.` });
   }
 
   async function sendMessage() {
@@ -278,6 +298,8 @@ export default function AgentsPage() {
           instructions: agent.instructions,
           history: priorHistory,
           userMessage: userMsg.content,
+          memory: agent.memory,
+          model: agent.model,
           youtubeUrl: agent.useYouTubeContext ? youtubeUrl : undefined,
         }),
       });
@@ -322,7 +344,10 @@ export default function AgentsPage() {
 
       const finalMessages: ChatMessage[] = [...nextMessages, { role: 'assistant', content: assistant }];
       setMessages(finalMessages);
-      localStorage.setItem(chatKey(agent.id), JSON.stringify(finalMessages));
+      await store.saveThread(agent.id, finalMessages);
+      // Distill durable memory in the background so the agent remembers the user
+      // next time. Never blocks the UI; failures are non-fatal.
+      refreshMemory(agent, finalMessages);
     } catch (err) {
       console.error(err);
       toast({ variant: 'destructive', title: 'Agent failed to respond', description: 'Check your Mesh API key and try again.' });
@@ -414,7 +439,7 @@ export default function AgentsPage() {
                     <Card key={agent.id} className="border-none shadow-sm hover:shadow-lg transition-all group relative">
                       <CardContent className="p-6 space-y-4">
                         <button
-                          onClick={(e) => { e.stopPropagation(); deleteAgent(agent.id); }}
+                          onClick={(e) => { e.stopPropagation(); handleDeleteAgent(agent.id); }}
                           className="absolute top-3 right-3 h-8 w-8 rounded-full bg-slate-50 text-slate-400 hover:text-destructive hover:bg-destructive/10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -515,14 +540,48 @@ export default function AgentsPage() {
 
         {view === 'CHAT' && activeAgent && (
           <div className="max-w-3xl mx-auto h-full flex flex-col py-4 animate-in fade-in">
-            <div className="flex items-center gap-4 mb-6">
+            <div className="flex items-center gap-4 mb-4">
               <Button variant="ghost" size="icon" onClick={() => setView('LIST')}><ChevronLeft className="h-5 w-5" /></Button>
               <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0"><Bot className="h-5 w-5 text-primary" /></div>
               <div>
                 <h2 className="font-bold text-slate-900">{activeAgent.name}</h2>
                 <Badge variant="outline" className="text-[10px] uppercase">{activeAgent.category}</Badge>
               </div>
+              <Button
+                variant={activeAgent.memory ? 'secondary' : 'ghost'}
+                size="sm"
+                onClick={() => setShowMemory((v) => !v)}
+                className="ml-auto gap-1.5 text-xs"
+                title="What this agent remembers about you"
+              >
+                <Brain className={cn('h-4 w-4', activeAgent.memory ? 'text-primary' : 'text-slate-400')} />
+                Memory
+              </Button>
             </div>
+
+            {showMemory && (
+              <Card className="border-none shadow-sm mb-4 bg-gradient-to-br from-indigo-50 to-fuchsia-50 animate-in fade-in slide-in-from-top-1">
+                <CardContent className="p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                      <Brain className="h-3.5 w-3.5 text-primary" /> What {activeAgent.name} remembers about you
+                    </p>
+                    {activeAgent.memory && (
+                      <button onClick={handleClearMemory} className="text-[11px] text-slate-500 hover:text-destructive font-medium">
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  {activeAgent.memory ? (
+                    <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{activeAgent.memory}</p>
+                  ) : (
+                    <p className="text-xs text-slate-400">
+                      Nothing yet. As you chat, this agent automatically remembers durable facts about you and your channel — and uses them in future conversations.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {activeAgent.useYouTubeContext && (
               <div className="mb-4">
