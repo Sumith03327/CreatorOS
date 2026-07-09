@@ -51,6 +51,15 @@ export function estimateEarnings(
   return { low: perK * lo, high: perK * Math.max(lo, hi) };
 }
 
+/** Compact count formatter: 1.2K, 3.4M, 12. */
+export function formatCompact(value?: string | number | null): string {
+  const n = typeof value === 'string' ? parseInt(value, 10) : (value || 0);
+  if (!n || isNaN(n)) return '0';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return Math.round(n).toString();
+}
+
 /** Compact USD formatter: $1.2K, $3.4M, $12. */
 export function formatMoney(n: number): string {
   if (!n || isNaN(n)) return '$0';

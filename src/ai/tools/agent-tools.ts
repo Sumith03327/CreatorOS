@@ -18,9 +18,26 @@ import {
   fetchVideoDetails,
   fetchTranscript,
   searchTrendingVideos,
+  searchOutlierVideos,
+  type ResearchVideo,
 } from '@/services/youtube';
 import { analyzeScript } from '@/ai/flows/analyze-script-flow';
-import { getTrendSummary, getTitlePatterns } from '@/ai/flows/get-insane-insights-flow';
+import { getTrendSummary, getTitleFormulas, type BriefVideo } from '@/ai/flows/get-insane-insights-flow';
+import { parseIsoDuration } from '@/lib/video-utils';
+import { toNum } from '@/lib/research-metrics';
+
+/** Shapes the search results into the evidence the grounded insight flows expect. */
+function toBriefVideos(videos: ResearchVideo[]): BriefVideo[] {
+  return videos.map((v) => ({
+    title: v.title,
+    views: toNum(v.viewCount),
+    outlierScore: v.outlierScore,
+    ageDays: Math.max(0, Math.round((Date.now() - new Date(v.publishedAt).getTime()) / 86400000)),
+    durationSeconds: parseIsoDuration(v.duration),
+    subscriberCount: toNum(v.subscriberCount),
+    channelTitle: v.channelTitle,
+  }));
+}
 
 // --- Shared helper (mirrors the regex previously inline in run-custom-agent-flow) ---
 
@@ -256,8 +273,18 @@ const getTrendingSummary: AgentTool = {
     const niche = String(args.niche ?? '').trim();
     if (!niche) return 'tool failed: no niche provided.';
     try {
-      const { bullets } = await getTrendSummary({ niche });
-      return `What's working in "${niche}" right now:\n` + bullets.map((b) => `- ${b}`).join('\n');
+      // The summary is only as good as the evidence behind it — fetch the actual
+      // top performers first rather than asking the model to recall a trend.
+      const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const videos = await searchOutlierVideos({
+        niche, publishedAfter, language: 'all', contentType: 'all', region: 'global', limit: 20, depth: 'quick',
+      });
+      if (!videos.length) return `No recent top videos found for "${niche}".`;
+      const { bullets } = await getTrendSummary({ niche, videos: toBriefVideos(videos) });
+      return (
+        `What's working in "${niche}" right now (from ${videos.length} current top performers):\n` +
+        bullets.map((b) => `- ${b}`).join('\n')
+      );
     } catch (e: any) {
       return `tool failed: ${e?.message || 'error fetching trends'}.`;
     }
@@ -287,15 +314,15 @@ const analyzeTitlePatterns: AgentTool = {
     if (!niche) return 'tool failed: no niche provided.';
     try {
       const publishedAfter = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      const videos = await searchTrendingVideos(niche, publishedAfter, 'all', 'all', 'global', 'viewCount');
-      const titles = videos.slice(0, 15).map((v) => v.title).filter(Boolean);
-      if (!titles.length) return `No recent top videos found for "${niche}" to study.`;
-      const { insights } = await getTitlePatterns({ niche, titles });
+      const videos = await searchOutlierVideos({
+        niche, publishedAfter, language: 'all', contentType: 'all', region: 'global', limit: 20, depth: 'quick',
+      });
+      if (!videos.length) return `No recent top videos found for "${niche}" to study.`;
+      const { formulas } = await getTitleFormulas({ niche, videos: toBriefVideos(videos) });
+      if (!formulas.length) return `Not enough signal to extract title patterns for "${niche}".`;
       return (
-        `Title patterns in "${niche}" (from ${titles.length} top videos):\n` +
-        insights.map((i) => `- ${i}`).join('\n') +
-        `\n\nSample titles studied:\n` +
-        titles.slice(0, 6).map((t) => `• ${t}`).join('\n')
+        `Title formulas winning in "${niche}" (from ${videos.length} top videos, ranked by how far each beat its own channel's average):\n` +
+        formulas.map((f) => `- ${f.template}\n  e.g. "${f.example}"\n  why: ${f.why}`).join('\n')
       );
     } catch (e: any) {
       return `tool failed: ${e?.message || 'error analyzing title patterns'}.`;

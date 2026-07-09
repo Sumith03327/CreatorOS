@@ -18,6 +18,8 @@ export interface WatchlistChannel {
   growthScore: number;
   niche: string;
   savedAt: string;
+  /** Subscriber count at the moment of saving, so we can show what's changed since. */
+  subscriberCountAtSave?: number;
 }
 
 export interface WatchlistVideo {
@@ -29,6 +31,8 @@ export interface WatchlistVideo {
   viewCount?: string;
   niche: string;
   savedAt: string;
+  /** How far it beat its channel's average when we saved it. */
+  outlierScore?: number;
 }
 
 const CHANNEL_KEY = 'creator-hub-watchlist';

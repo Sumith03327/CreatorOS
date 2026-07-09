@@ -1,150 +1,153 @@
-
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
 import {
-  Zap,
   RefreshCw,
-  Flame,
-  TrendingUp,
-  User,
-  BarChart,
   AlertTriangle,
-  Loader2,
-  Globe,
-  Users,
-  Clock,
-  Filter,
-  RotateCcw,
   Video,
   X,
-  Plus,
   Database,
   SearchX,
-  Bookmark,
-  BookmarkPlus,
-  Sparkles
+  Flame,
+  LayoutGrid,
+  Rows3,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
+import { OutlierCard } from '@/components/research/OutlierCard';
+import { OutlierTable } from '@/components/research/OutlierTable';
+import { ResearchBrief } from '@/components/research/ResearchBrief';
+import { TeardownDialog } from '@/components/research/TeardownDialog';
+import { ThumbnailDnaPanel } from '@/components/research/ThumbnailDnaPanel';
 import { useFirebase, doc, getDoc, setDoc, serverTimestamp } from '@/firebase';
-import { searchTrendingVideos, type YouTubeVideoData } from '@/services/youtube';
-import { getTrendSummary, getTitlePatterns } from '@/ai/flows/get-insane-insights-flow';
+import { searchOutlierVideos, type ResearchVideo } from '@/services/youtube';
+import { getTrendSummary, getTitleFormulas, type TitleFormula } from '@/ai/flows/get-insane-insights-flow';
 import { cn } from '@/lib/utils';
-import { errorEmitter } from '@/firebase/error-emitter';
-import { FirestorePermissionError } from '@/firebase/errors';
 import { RESEARCH_NICHES } from '@/lib/niches';
 import { getVideoWatchlist, saveVideoWatchlist, type WatchlistVideo } from '@/lib/watchlist';
+import { toNum } from '@/lib/research-metrics';
+import { parseIsoDuration, timeAgo } from '@/lib/video-utils';
 
 const LANGUAGES = [
-  { label: "All Languages", value: "all" },
-  { label: "Hindi", value: "hi" },
-  { label: "English", value: "en" },
-  { label: "Tamil", value: "ta" },
-  { label: "Telugu", value: "te" },
-  { label: "Malayalam", value: "ml" },
-  { label: "Kannada", value: "kn" },
-  { label: "Bengali", value: "bn" },
-  { label: "Marathi", value: "mr" }
+  { label: 'All Languages', value: 'all' },
+  { label: 'Hindi', value: 'hi' },
+  { label: 'English', value: 'en' },
+  { label: 'Tamil', value: 'ta' },
+  { label: 'Telugu', value: 'te' },
+  { label: 'Malayalam', value: 'ml' },
+  { label: 'Kannada', value: 'kn' },
+  { label: 'Bengali', value: 'bn' },
+  { label: 'Marathi', value: 'mr' },
 ];
 
+/**
+ * Subscriber bands. These are sent to the search so the candidate pool is
+ * filtered *before* ranking — filtering the ranked results instead is what made
+ * the old "Nano" option come back empty.
+ */
 const CHANNEL_SIZES = [
-  { label: "Any Size", value: "any" },
-  { label: "Nano (<10K)", value: "nano" },
-  { label: "Micro (10K–100K)", value: "micro" },
-  { label: "Mid (100K–1M)", value: "mid" },
-  { label: "Large (>1M)", value: "large" }
+  { label: 'Any Size', value: 'any', subscriberMin: undefined, subscriberMax: undefined },
+  { label: 'Nano (<10K)', value: 'nano', subscriberMin: undefined, subscriberMax: 10_000 },
+  { label: 'Micro (10K–100K)', value: 'micro', subscriberMin: 10_000, subscriberMax: 100_000 },
+  { label: 'Mid (100K–1M)', value: 'mid', subscriberMin: 100_000, subscriberMax: 1_000_000 },
+  { label: 'Large (>1M)', value: 'large', subscriberMin: 1_000_000, subscriberMax: undefined },
 ];
 
+// Sorting happens client-side over the pooled results, so it costs nothing and
+// never re-biases the sample the way an API-side `order` does.
 const SORT_OPTIONS = [
-  { label: "Most Views", value: "viewCount" },
-  { label: "Most Recent", value: "date" },
-  { label: "Most Relevant", value: "relevance" },
-  { label: "Rising Fast", value: "rising" }
+  { label: 'Outlier score', value: 'outlier' },
+  { label: 'Hot right now', value: 'vph' },
+  { label: 'Most views', value: 'views' },
+  { label: 'Newest', value: 'date' },
 ];
 
 const REGIONS = [
-  { label: "India", value: "IN" },
-  { label: "Global", value: "global" }
+  { label: 'India', value: 'IN' },
+  { label: 'Global', value: 'global' },
 ];
+
+/** A video that beat its channel's normal by 3x or more is worth studying. */
+const OUTLIER_THRESHOLD = 3;
+
+const VIDEO_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const INSIGHT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export default function InsaneInsightsPage() {
   const [mounted, setMounted] = useState(false);
-  const { user, firestore, isUserLoading } = useFirebase();
+  const { user } = useFirebase();
   const router = useRouter();
 
-  // Primary Preferences
-  const [selectedNiche, setSelectedNiche] = useState<string>("Finance");
+  const [selectedNiche, setSelectedNiche] = useState('Finance');
   const [customNiches, setCustomNiches] = useState<string[]>([]);
-  const [customNicheInput, setCustomNicheInput] = useState("");
+  const [customNicheInput, setCustomNicheInput] = useState('');
   const [showCustomInput, setShowCustomInput] = useState(false);
-  const [dateRange, setDateRange] = useState<"7" | "30">("30");
+  const [dateRange] = useState<'7' | '30'>('30');
   const customInputRef = useRef<HTMLInputElement>(null);
 
-  // Advanced Filters
   const [contentType, setContentType] = useState<'all' | 'long' | 'short'>('all');
   const [language, setLanguage] = useState('all');
   const [channelSize, setChannelSize] = useState('any');
-  const [sortBy, setSortBy] = useState('viewCount');
+  const [sortBy, setSortBy] = useState('outlier');
   const [region, setRegion] = useState<'IN' | 'global'>('IN');
+  const [outliersOnly, setOutliersOnly] = useState(false);
+  const [view, setView] = useState<'grid' | 'table'>('grid');
 
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
   const [trendSummary, setTrendSummary] = useState<string[]>([]);
-  const [videos, setVideos] = useState<YouTubeVideoData[]>([]);
-  const [titleInsights, setTitleInsights] = useState<string[]>([]);
+  const [formulas, setFormulas] = useState<TitleFormula[]>([]);
+  const [videos, setVideos] = useState<ResearchVideo[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [resilienceMode, setResilienceMode] = useState(false);
   const [videoWatchlist, setVideoWatchlist] = useState<WatchlistVideo[]>([]);
+  const [teardownVideo, setTeardownVideo] = useState<ResearchVideo | null>(null);
 
   useEffect(() => {
     setMounted(true);
     setVideoWatchlist(getVideoWatchlist());
   }, []);
 
-  // Focus input when shown
   useEffect(() => {
-    if (showCustomInput && customInputRef.current) {
-      customInputRef.current.focus();
-    }
+    if (showCustomInput) customInputRef.current?.focus();
   }, [showCustomInput]);
 
   useEffect(() => {
     if (!mounted || !user) return;
     async function loadPrefs() {
       try {
-        const prefRef = doc('users', user!.uid);
-        const docSnap = await getDoc(prefRef);
-        if (docSnap.exists()) {
-          const data = docSnap.data();
+        const snapshot = await getDoc(doc('users', user!.uid));
+        if (snapshot.exists()) {
+          const data = snapshot.data();
           if (data.selectedNiche) setSelectedNiche(data.selectedNiche);
-          if (data.selectedRange) setDateRange(data.selectedRange as "7" | "30");
           if (data.contentType) setContentType(data.contentType);
           if (data.language) setLanguage(data.language);
           if (data.channelSize) setChannelSize(data.channelSize);
           if (data.sortBy) setSortBy(data.sortBy);
           if (data.region) setRegion(data.region);
         }
-      } catch (e) { console.error("Error loading user preferences:", e); }
-      finally { setPrefsLoaded(true); }
+      } catch (e) {
+        console.error('Error loading user preferences:', e);
+      } finally {
+        setPrefsLoaded(true);
+      }
     }
     loadPrefs();
   }, [user, mounted]);
 
   useEffect(() => {
     if (mounted && prefsLoaded && selectedNiche && user) fetchData();
-  }, [selectedNiche, dateRange, contentType, language, channelSize, sortBy, region, user, mounted, prefsLoaded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedNiche, dateRange, contentType, language, channelSize, region, user, mounted, prefsLoaded]);
 
   async function fetchData(forceRefresh = false) {
     if (!selectedNiche || !user) return;
@@ -152,43 +155,39 @@ export default function InsaneInsightsPage() {
     else setRefreshing(true);
     setError(null);
     setResilienceMode(false);
+
     const today = new Date().toISOString().split('T')[0];
     const nicheKey = selectedNiche.replace(/\s+/g, '');
-    const filterKey = `${nicheKey}_${dateRange}_${contentType}_${language}_${sortBy}_${region}`;
+    // Sort order is applied client-side, so it must not fragment the cache.
+    const filterKey = `${nicheKey}_${dateRange}_${contentType}_${language}_${channelSize}_${region}`;
     const now = Date.now();
 
     try {
-      // 1. Trend Summary
-      const summaryRef = doc('trendSummaries', `${nicheKey}_${today}`);
-      const summarySnap = await getDoc(summaryRef);
-      let summaryData: string[] = [];
-      const summaryCache = summarySnap.data();
-      if (!forceRefresh && summarySnap.exists() && (now - new Date(summaryCache?.cachedAt).getTime()) < 24 * 60 * 60 * 1000) {
-        summaryData = summaryCache?.bullets || [];
-      } else {
-        try {
-          const aiSummary = await getTrendSummary({ niche: selectedNiche });
-          summaryData = aiSummary.bullets;
-          setDoc(summaryRef, { bullets: summaryData, cachedAt: serverTimestamp() });
-        } catch (aiErr) {
-          if (summarySnap.exists()) summaryData = summaryCache?.bullets || [];
-          else summaryData = ["Resilience mode active: Loading patterns..."];
-        }
-      }
-      setTrendSummary(summaryData);
-
-      // 2. YouTube Videos
       const videosRef = doc('insightVideos', `${filterKey}_${today}`);
       const videosSnap = await getDoc(videosRef);
-      let videoData: YouTubeVideoData[] = [];
       const videosCache = videosSnap.data();
-      if (!forceRefresh && videosSnap.exists() && (now - new Date(videosCache?.cachedAt).getTime()) < 6 * 60 * 60 * 1000) {
+      const cacheAge = videosSnap.exists() ? now - new Date(videosCache?.cachedAt).getTime() : Infinity;
+
+      let videoData: ResearchVideo[] = [];
+      let servedFromCache = false;
+
+      if (!forceRefresh && cacheAge < VIDEO_CACHE_TTL_MS) {
         videoData = videosCache?.videos || [];
+        servedFromCache = true;
         setLastUpdated(new Date(videosCache?.cachedAt));
       } else {
+        const size = CHANNEL_SIZES.find(s => s.value === channelSize);
+        const publishedAfter = new Date(now - parseInt(dateRange) * 24 * 60 * 60 * 1000).toISOString();
         try {
-          const publishedAfter = new Date(Date.now() - (parseInt(dateRange) * 24 * 60 * 60 * 1000)).toISOString();
-          videoData = await searchTrendingVideos(selectedNiche, publishedAfter, language, contentType, region, sortBy === 'rising' ? 'viewCount' : sortBy);
+          videoData = await searchOutlierVideos({
+            niche: selectedNiche,
+            publishedAfter,
+            language,
+            contentType,
+            region,
+            subscriberMin: size?.subscriberMin,
+            subscriberMax: size?.subscriberMax,
+          });
           if (videoData.length > 0) {
             setDoc(videosRef, { videos: videoData, cachedAt: serverTimestamp() });
             setLastUpdated(new Date());
@@ -196,42 +195,86 @@ export default function InsaneInsightsPage() {
         } catch (ytErr: any) {
           if (videosSnap.exists()) {
             videoData = videosCache?.videos || [];
+            servedFromCache = true;
             setResilienceMode(true);
             setLastUpdated(new Date(videosCache?.cachedAt));
-            setError("YouTube API limits reached. Serving latest cached research.");
+            setError('YouTube API limits reached. Serving the latest cached research.');
           } else {
-            setError(ytErr.message || "Quota limit hit and no local cache found yet.");
+            setError(ytErr.message || 'Quota limit hit and no local cache found yet.');
           }
         }
       }
+
       setVideos(videoData);
+      await loadInsights(videoData, filterKey, today, forceRefresh && !servedFromCache);
 
-      // 3. Title Insights
-      const patternsRef = doc('titlePatterns', `${filterKey}_${today}`);
-      const patternsSnap = await getDoc(patternsRef);
-      let patternData: string[] = [];
-      const patternsCache = patternsSnap.data();
-      if (!forceRefresh && patternsSnap.exists() && (now - new Date(patternsCache?.cachedAt).getTime()) < 24 * 60 * 60 * 1000) {
-        patternData = patternsCache?.insights || [];
-      } else if (videoData.length > 0) {
-        try {
-          const aiPatterns = await getTitlePatterns({ niche: selectedNiche, titles: videoData.map(v => v.title) });
-          patternData = aiPatterns.insights;
-          setDoc(patternsRef, { insights: patternData, cachedAt: serverTimestamp() });
-        } catch (aiErr) {
-          if (patternsSnap.exists()) patternData = patternsCache?.insights || [];
-        }
-      }
-      setTitleInsights(patternData);
-
-      const prefRef = doc('users', user!.uid);
-      setDoc(prefRef, { selectedNiche, selectedRange: dateRange, contentType, language, channelSize, sortBy, region }, { merge: true });
+      setDoc(doc('users', user!.uid), { selectedNiche, contentType, language, channelSize, sortBy, region }, { merge: true });
     } catch (err: any) {
-      console.error("General Fetch Error:", err);
-      if (videos.length === 0) setError("Research system is currently limited. Please check your API key.");
+      console.error('General fetch error:', err);
+      if (videos.length === 0) setError('Research system is currently limited. Please check your API key.');
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  }
+
+  /**
+   * The trend bullets and title formulas are read off `videoData` itself, so they
+   * are cached against the same filter key — a summary of one filter's videos is
+   * meaningless for another's.
+   */
+  async function loadInsights(videoData: ResearchVideo[], filterKey: string, today: string, forceRefresh: boolean) {
+    if (videoData.length === 0) {
+      setTrendSummary([]);
+      setFormulas([]);
+      return;
+    }
+
+    const now = Date.now();
+    const briefVideos = videoData.map(v => ({
+      title: v.title,
+      views: toNum(v.viewCount),
+      outlierScore: v.outlierScore,
+      ageDays: Math.max(0, Math.round((now - new Date(v.publishedAt).getTime()) / 86_400_000)),
+      durationSeconds: parseIsoDuration(v.duration),
+      subscriberCount: toNum(v.subscriberCount),
+      channelTitle: v.channelTitle,
+    }));
+
+    const summaryRef = doc('trendSummaries', `${filterKey}_${today}`);
+    const formulasRef = doc('titleFormulas', `${filterKey}_${today}`);
+    const [summarySnap, formulasSnap] = await Promise.all([getDoc(summaryRef), getDoc(formulasRef)]);
+
+    const summaryCache = summarySnap.data();
+    const summaryFresh =
+      !forceRefresh && summarySnap.exists() && now - new Date(summaryCache?.cachedAt).getTime() < INSIGHT_CACHE_TTL_MS;
+
+    if (summaryFresh) {
+      setTrendSummary(summaryCache?.bullets || []);
+    } else {
+      try {
+        const { bullets } = await getTrendSummary({ niche: selectedNiche, videos: briefVideos });
+        setTrendSummary(bullets);
+        setDoc(summaryRef, { bullets, cachedAt: serverTimestamp() });
+      } catch {
+        setTrendSummary(summaryCache?.bullets || []);
+      }
+    }
+
+    const formulasCache = formulasSnap.data();
+    const formulasFresh =
+      !forceRefresh && formulasSnap.exists() && now - new Date(formulasCache?.cachedAt).getTime() < INSIGHT_CACHE_TTL_MS;
+
+    if (formulasFresh) {
+      setFormulas(formulasCache?.formulas || []);
+    } else {
+      try {
+        const { formulas: extracted } = await getTitleFormulas({ niche: selectedNiche, videos: briefVideos });
+        setFormulas(extracted);
+        setDoc(formulasRef, { formulas: extracted, cachedAt: serverTimestamp() });
+      } catch {
+        setFormulas(formulasCache?.formulas || []);
+      }
     }
   }
 
@@ -241,101 +284,148 @@ export default function InsaneInsightsPage() {
       setCustomNiches(prev => [...prev, trimmed]);
       setSelectedNiche(trimmed);
     }
-    setCustomNicheInput("");
+    setCustomNicheInput('');
     setShowCustomInput(false);
   };
 
-  const handleRemoveCustomNiche = (n: string) => {
-    setCustomNiches(prev => prev.filter(item => item !== n));
-    if (selectedNiche === n) setSelectedNiche(RESEARCH_NICHES[0]);
+  const handleRemoveCustomNiche = (niche: string) => {
+    setCustomNiches(prev => prev.filter(item => item !== niche));
+    if (selectedNiche === niche) setSelectedNiche(RESEARCH_NICHES[0]);
   };
 
-  const toggleVideoBookmark = (video: YouTubeVideoData) => {
+  const toggleVideoBookmark = (video: ResearchVideo) => {
     const isSaved = videoWatchlist.some(item => item.id === video.id);
-    let newItems: WatchlistVideo[];
-    if (isSaved) {
-      newItems = videoWatchlist.filter(i => i.id !== video.id);
-    } else {
-      newItems = [...videoWatchlist, {
-        id: video.id,
-        title: video.title,
-        thumbnail: video.thumbnail,
-        channelTitle: video.channelTitle,
-        channelId: video.channelId,
-        viewCount: video.viewCount,
-        niche: selectedNiche,
-        savedAt: new Date().toISOString(),
-      }];
-    }
-    setVideoWatchlist(newItems);
-    saveVideoWatchlist(newItems);
+    const next = isSaved
+      ? videoWatchlist.filter(item => item.id !== video.id)
+      : [
+          ...videoWatchlist,
+          {
+            id: video.id,
+            title: video.title,
+            thumbnail: video.thumbnail,
+            channelTitle: video.channelTitle,
+            channelId: video.channelId,
+            viewCount: video.viewCount,
+            outlierScore: video.outlierScore,
+            niche: selectedNiche,
+            savedAt: new Date().toISOString(),
+          },
+        ];
+    setVideoWatchlist(next);
+    saveVideoWatchlist(next);
   };
 
-  const filteredVideos = useMemo(() => {
-    let result = [...videos];
-    if (channelSize !== 'any') {
-      result = result.filter(v => {
-        const subs = parseInt(v.subscriberCount || "0");
-        if (channelSize === 'nano') return subs < 10000;
-        if (channelSize === 'micro') return subs >= 10000 && subs < 100000;
-        if (channelSize === 'mid') return subs >= 100000 && subs < 1000000;
-        if (channelSize === 'large') return subs >= 1000000;
-        return true;
-      });
-    }
-    if (sortBy === 'rising') {
-      result.sort((a, b) => {
-        const ratioA = parseInt(a.viewCount || "0") / Math.max(1, parseInt(a.subscriberCount || "1"));
-        const ratioB = parseInt(b.viewCount || "0") / Math.max(1, parseInt(b.subscriberCount || "1"));
-        return ratioB - ratioA;
-      });
-    }
-    return result;
-  }, [videos, channelSize, sortBy]);
-
-  const formatNumber = (num?: string | number) => {
-    if (!num) return "0";
-    const n = typeof num === 'string' ? parseInt(num) : num;
-    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-    return n.toString();
+  const openChannel = (video: ResearchVideo) => {
+    router.push(`/?url=${encodeURIComponent(`https://www.youtube.com/channel/${video.channelId}`)}`);
   };
+
+  const visibleVideos = useMemo(() => {
+    const result = outliersOnly ? videos.filter(v => v.outlierScore >= OUTLIER_THRESHOLD) : [...videos];
+    const comparators: Record<string, (a: ResearchVideo, b: ResearchVideo) => number> = {
+      outlier: (a, b) => b.outlierScore - a.outlierScore,
+      vph: (a, b) => b.vph - a.vph,
+      views: (a, b) => toNum(b.viewCount) - toNum(a.viewCount),
+      date: (a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime(),
+    };
+    return result.sort(comparators[sortBy] ?? comparators.outlier);
+  }, [videos, sortBy, outliersOnly]);
+
+  const outlierCount = useMemo(() => videos.filter(v => v.outlierScore >= OUTLIER_THRESHOLD).length, [videos]);
 
   if (!mounted) return null;
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <SidebarNav />
-      <main className="flex-1 overflow-y-auto p-8 relative scroll-smooth">
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+      <main className="relative flex-1 scroll-smooth overflow-y-auto p-8">
+        <header className="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
-            <div className="flex items-center gap-2 mb-1">
+            <div className="mb-1 flex items-center gap-2">
               <Video className="h-6 w-6 text-primary" />
-              <h1 className="text-3xl font-bold tracking-tight text-slate-900 font-headline">Content Insights</h1>
+              <h1 className="font-headline text-3xl font-bold tracking-tight text-slate-900">Content Insights</h1>
             </div>
-            <p className="text-muted-foreground">What's blowing up on YouTube right now in your niche.</p>
+            <p className="text-muted-foreground">
+              Videos that beat their own channel's average — the ones whose topic and packaging actually did the work.
+            </p>
           </div>
           <div className="flex items-center gap-4">
-            {resilienceMode && <Badge className="bg-amber-100 text-amber-700 border-none gap-1.5 px-3 py-1 animate-pulse"><Database className="h-3 w-3" /> Resilience Mode</Badge>}
-            <Button variant="outline" size="sm" onClick={() => fetchData(true)} disabled={loading || refreshing} className="rounded-full gap-2 border-slate-200">
-              <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} /> Refresh
+            {lastUpdated && (
+              <span className="text-xs text-slate-400">Data from {timeAgo(lastUpdated.toISOString())}</span>
+            )}
+            {resilienceMode && (
+              <Badge className="animate-pulse gap-1.5 border-none bg-amber-100 px-3 py-1 text-amber-700">
+                <Database className="h-3 w-3" /> Resilience Mode
+              </Badge>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fetchData(true)}
+              disabled={loading || refreshing}
+              className="gap-2 rounded-full border-slate-200"
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', refreshing && 'animate-spin')} /> Refresh
             </Button>
           </div>
         </header>
 
         <section className="mb-6 space-y-6">
           <div className="flex flex-wrap gap-2">
-            {RESEARCH_NICHES.map(n => <Button key={n} variant={selectedNiche === n ? "default" : "outline"} size="sm" onClick={() => setSelectedNiche(n)} className={cn("rounded-full px-5 h-8", selectedNiche === n ? "bg-primary" : "border-slate-200")}>{n}</Button>)}
-            {customNiches.map(n => <Button key={n} variant={selectedNiche === n ? "default" : "outline"} size="sm" onClick={() => setSelectedNiche(n)} className="rounded-full pl-5 pr-3 h-8 group gap-2">{n}<X className="h-3 w-3" onClick={(e) => { e.stopPropagation(); handleRemoveCustomNiche(n); }} /></Button>)}
-            {!showCustomInput ? <Button variant="outline" size="sm" onClick={() => setShowCustomInput(true)} className="rounded-full px-5 h-8 border-dashed">+ Custom</Button> : (
-              <div className="flex items-center gap-1 animate-in slide-in-from-left-2"><Input ref={customInputRef} placeholder="Niche..." value={customNicheInput} onChange={(e) => setCustomNicheInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleAddCustomNiche()} className="h-8 w-32 rounded-full border-primary" /></div>
+            {RESEARCH_NICHES.map(niche => (
+              <Button
+                key={niche}
+                variant={selectedNiche === niche ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setSelectedNiche(niche)}
+                className={cn('h-8 rounded-full px-5', selectedNiche === niche ? 'bg-primary' : 'border-slate-200')}
+              >
+                {niche}
+              </Button>
+            ))}
+            {customNiches.map(niche => (
+              <Button
+                key={niche}
+                variant={selectedNiche === niche ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setSelectedNiche(niche)}
+                className="group h-8 gap-2 rounded-full pl-5 pr-3"
+              >
+                {niche}
+                <X
+                  className="h-3 w-3"
+                  onClick={e => {
+                    e.stopPropagation();
+                    handleRemoveCustomNiche(niche);
+                  }}
+                />
+              </Button>
+            ))}
+            {!showCustomInput ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowCustomInput(true)}
+                className="h-8 rounded-full border-dashed px-5"
+              >
+                + Custom
+              </Button>
+            ) : (
+              <Input
+                ref={customInputRef}
+                placeholder="Niche…"
+                value={customNicheInput}
+                onChange={e => setCustomNicheInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddCustomNiche()}
+                onBlur={handleAddCustomNiche}
+                className="h-8 w-32 rounded-full border-primary"
+              />
             )}
           </div>
 
-          <div className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm space-y-6">
+          <div className="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
             <div className="flex flex-wrap items-end gap-6">
-              <FilterGroup label="Content Type" value={contentType} onChange={(v: any) => setContentType(v)} options={['all', 'long', 'short']} />
-              <FilterGroup label="Region" value={region} onChange={(v: any) => setRegion(v)} options={REGIONS} />
+              <FilterGroup label="Content Type" value={contentType} onChange={setContentType} options={['all', 'long', 'short']} />
+              <FilterGroup label="Region" value={region} onChange={setRegion} options={REGIONS} />
               <FilterSelectGroup label="Language" value={language} onChange={setLanguage} options={LANGUAGES} />
               <FilterSelectGroup label="Channel Size" value={channelSize} onChange={setChannelSize} options={CHANNEL_SIZES} />
               <FilterSelectGroup label="Sort By" value={sortBy} onChange={setSortBy} options={SORT_OPTIONS} />
@@ -343,75 +433,135 @@ export default function InsaneInsightsPage() {
           </div>
         </section>
 
-        <div className="space-y-12 animate-in fade-in duration-500">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <Card className="border-none shadow-sm overflow-hidden bg-white border-l-4 border-l-primary p-6">
-              <CardTitle className="text-lg font-bold flex items-center gap-2 mb-4"><Zap className="h-4 w-4 text-primary" /> Current Trends</CardTitle>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin text-primary" /> : (
-                <ul className="space-y-2">
-                  {trendSummary.map((b, i) => <li key={i} className="text-sm text-slate-700 flex gap-2"><span className="h-1.5 w-1.5 rounded-full bg-primary mt-1.5 shrink-0" />{b}</li>)}
-                </ul>
-              )}
-            </Card>
+        <div className="space-y-8 animate-in fade-in duration-500">
+          <ResearchBrief
+            niche={selectedNiche}
+            videos={videos}
+            trends={trendSummary}
+            formulas={formulas}
+            loading={loading}
+          />
 
-            <Card className="border-none shadow-sm overflow-hidden bg-white border-l-4 border-l-[#264ADE] p-6">
-              <CardTitle className="text-lg font-bold flex items-center gap-2 mb-4"><Sparkles className="h-4 w-4 text-[#264ADE]" /> Title Patterns</CardTitle>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin text-[#264ADE]" /> : titleInsights.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Not enough trending videos yet to spot a pattern — try widening your filters.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {titleInsights.map((b, i) => <li key={i} className="text-sm text-slate-700 flex gap-2"><span className="h-1.5 w-1.5 rounded-full bg-[#264ADE] mt-1.5 shrink-0" />{b}</li>)}
-                </ul>
-              )}
-            </Card>
-          </div>
+          {videos.length > 0 && <ThumbnailDnaPanel niche={selectedNiche} videos={visibleVideos} />}
 
-          {error && <div className={cn("p-4 border rounded-xl flex gap-3", resilienceMode ? "bg-amber-50" : "bg-red-50")}><AlertTriangle className="h-5 w-5 shrink-0" /><p className="text-sm font-medium">{error}</p></div>}
-
-          {!loading && filteredVideos.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-3 py-24 text-center border border-dashed border-slate-200 rounded-3xl">
-              <SearchX className="h-8 w-8 text-slate-300" />
-              <p className="text-sm font-bold text-slate-700">No trending videos found for "{selectedNiche}"</p>
-              <p className="text-xs text-muted-foreground max-w-xs">Try widening the date range, switching region, or loosening the channel size filter.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-              {loading ? Array(8).fill(0).map((_, i) => <Skeleton key={i} className="aspect-video rounded-xl" />) : filteredVideos.map(v => {
-                const isSaved = videoWatchlist.some(item => item.id === v.id);
-                return (
-                  <Card key={v.id} className="overflow-hidden border-none shadow-sm bg-white group relative">
-                    <div className="relative aspect-video">
-                      <Image src={v.thumbnail} alt={v.title} fill className="object-cover" />
-                      <button
-                        onClick={() => toggleVideoBookmark(v)}
-                        className={cn("absolute top-2 right-2 h-8 w-8 rounded-full flex items-center justify-center transition-all", isSaved ? "bg-primary/90 text-white" : "bg-black/50 text-white hover:bg-black/70")}
-                      >
-                        {isSaved ? <Bookmark className="h-4 w-4 fill-white" /> : <BookmarkPlus className="h-4 w-4" />}
-                      </button>
-                    </div>
-                    <CardContent className="p-4 space-y-3">
-                      <h4 className="text-sm font-bold line-clamp-2 h-10">{v.title}</h4>
-                      <div className="flex justify-between text-[10px] text-slate-400"><span>{v.channelTitle}</span><span>{formatNumber(v.viewCount)} views</span></div>
-                      <Button variant="outline" className="w-full h-8 text-xs font-bold" onClick={() => router.push(`/?url=${encodeURIComponent(`https://www.youtube.com/channel/${v.channelId}`)}`)}>Analyse</Button>
-                    </CardContent>
-                  </Card>
-                );
-              })}
+          {error && (
+            <div className={cn('flex gap-3 rounded-xl border p-4', resilienceMode ? 'bg-amber-50' : 'bg-red-50')}>
+              <AlertTriangle className="h-5 w-5 shrink-0" />
+              <p className="text-sm font-medium">{error}</p>
             </div>
           )}
+
+          {videos.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Button
+                  variant={outliersOnly ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setOutliersOnly(v => !v)}
+                  className="h-8 gap-2 rounded-full text-xs font-bold"
+                >
+                  <Flame className="h-3.5 w-3.5" />
+                  Outliers only
+                  <Badge className="border-none bg-white/20 px-1.5 text-[10px] tabular-nums">{outlierCount}</Badge>
+                </Button>
+                <span className="text-xs text-slate-400">
+                  Showing {visibleVideos.length} of {videos.length}
+                </span>
+              </div>
+
+              <div className="flex rounded-lg bg-slate-50 p-1">
+                <Button
+                  variant={view === 'grid' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setView('grid')}
+                  aria-label="Grid view"
+                  className={cn('h-7 px-3', view === 'grid' && 'bg-white shadow-sm')}
+                >
+                  <LayoutGrid className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant={view === 'table' ? 'secondary' : 'ghost'}
+                  size="sm"
+                  onClick={() => setView('table')}
+                  aria-label="Table view"
+                  className={cn('h-7 px-3', view === 'table' && 'bg-white shadow-sm')}
+                >
+                  <Rows3 className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+              {Array(8)
+                .fill(0)
+                .map((_, i) => (
+                  <Skeleton key={i} className="aspect-video rounded-xl" />
+                ))}
+            </div>
+          ) : visibleVideos.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-3 rounded-3xl border border-dashed border-slate-200 py-24 text-center">
+              <SearchX className="h-8 w-8 text-slate-300" />
+              <p className="text-sm font-bold text-slate-700">
+                {outliersOnly && videos.length > 0
+                  ? `Nothing beat its channel by ${OUTLIER_THRESHOLD}x in "${selectedNiche}"`
+                  : `No trending videos found for "${selectedNiche}"`}
+              </p>
+              <p className="max-w-xs text-xs text-muted-foreground">
+                {outliersOnly && videos.length > 0
+                  ? 'That itself is a signal: this niche is being carried by big channels rather than by topics. Turn the filter off to see the full pool.'
+                  : 'Try widening the date range, switching region, or loosening the channel size filter.'}
+              </p>
+            </div>
+          ) : view === 'table' ? (
+            <OutlierTable
+              videos={visibleVideos}
+              watchlist={videoWatchlist}
+              onToggleSave={toggleVideoBookmark}
+              onTeardown={setTeardownVideo}
+            />
+          ) : (
+            <TooltipProvider delayDuration={150}>
+              <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+                {visibleVideos.map(video => (
+                  <OutlierCard
+                    key={video.id}
+                    video={video}
+                    isSaved={videoWatchlist.some(item => item.id === video.id)}
+                    onToggleSave={toggleVideoBookmark}
+                    onAnalyse={openChannel}
+                    onTeardown={setTeardownVideo}
+                  />
+                ))}
+              </div>
+            </TooltipProvider>
+          )}
         </div>
+
+        <TeardownDialog video={teardownVideo} onClose={() => setTeardownVideo(null)} />
       </main>
     </div>
   );
 }
 
 function FilterGroup({ label, value, onChange, options }: any) {
-  const normalized = options.map((o: any) => (typeof o === 'string' ? { value: o, label: o } : o));
+  const normalized = options.map((option: any) => (typeof option === 'string' ? { value: option, label: option } : option));
   return (
     <div className="space-y-2">
-      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</p>
-      <div className="flex bg-slate-50 p-1 rounded-lg">
-        {normalized.map((opt: any) => <Button key={opt.value} variant={value === opt.value ? "secondary" : "ghost"} size="sm" onClick={() => onChange(opt.value)} className={cn("h-7 px-4 text-xs rounded-md", value === opt.value && "bg-white shadow-sm")}>{opt.label}</Button>)}
+      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <div className="flex rounded-lg bg-slate-50 p-1">
+        {normalized.map((option: any) => (
+          <Button
+            key={option.value}
+            variant={value === option.value ? 'secondary' : 'ghost'}
+            size="sm"
+            onClick={() => onChange(option.value)}
+            className={cn('h-7 rounded-md px-4 text-xs', value === option.value && 'bg-white shadow-sm')}
+          >
+            {option.label}
+          </Button>
+        ))}
       </div>
     </div>
   );
@@ -420,10 +570,18 @@ function FilterGroup({ label, value, onChange, options }: any) {
 function FilterSelectGroup({ label, value, onChange, options }: any) {
   return (
     <div className="space-y-2">
-      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{label}</p>
+      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-[140px] h-9 rounded-lg bg-slate-50 border-none text-xs"><SelectValue /></SelectTrigger>
-        <SelectContent>{options.map((o: any) => <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>)}</SelectContent>
+        <SelectTrigger className="h-9 w-[140px] rounded-lg border-none bg-slate-50 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((option: any) => (
+            <SelectItem key={option.value} value={option.value} className="text-xs">
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
       </Select>
     </div>
   );
