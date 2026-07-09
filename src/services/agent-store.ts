@@ -45,6 +45,8 @@ export interface CustomAgent {
   model?: string;
   /** Per-agent toolset (tool names from the agent-tools registry). Empty = all. */
   tools?: string[];
+  /** Composio connector toolkits this agent can act through (e.g. ['gmail']). */
+  connectors?: string[];
   /** Durable, distilled facts this agent has learned about the user, injected
    *  into its system prompt so it "remembers" across separate conversations. */
   memory?: string;

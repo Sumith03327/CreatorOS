@@ -16,6 +16,7 @@ import {
   type MeshAssistantMessage,
 } from '@/services/mesh';
 import { getToolSchemas, executeTool } from '@/ai/tools/agent-tools';
+import { getComposioTools, executeComposioTool, listConnections } from '@/services/composio';
 import { fetchYouTubeChannelData, fetchVideoDetails } from '@/services/youtube';
 import { extractVideoId } from '@/ai/tools/agent-tools';
 
@@ -27,6 +28,8 @@ export interface RunCustomAgentInput {
   model?: string;
   /** Per-agent toolset (tool names). Empty/undefined = all tools. */
   tools?: string[];
+  /** Composio connector toolkits this agent may act through (e.g. ['gmail','googlesheets']). */
+  connectors?: string[];
   /** Durable, distilled facts about the user, carried across separate chats.
    *  Folded into the system prompt so the agent "remembers" the user. */
   memory?: string;
@@ -51,6 +54,20 @@ const TOOL_STATUS: Record<string, string> = {
   get_trending_summary: 'Scanning current trends…',
   analyze_title_patterns: 'Studying winning titles…',
 };
+
+/** Turn a Composio tool name (e.g. GMAIL_SEND_EMAIL) into a friendly app label. */
+function prettyConnector(toolName: string): string {
+  const app = toolName.split('_')[0] || 'app';
+  const map: Record<string, string> = {
+    GMAIL: 'Gmail',
+    GOOGLESHEETS: 'Google Sheets',
+    GOOGLEDOCS: 'Google Docs',
+    GOOGLECALENDAR: 'Google Calendar',
+    NOTION: 'Notion',
+    SLACK: 'Slack',
+  };
+  return map[app] ?? app.charAt(0) + app.slice(1).toLowerCase();
+}
 
 /** Legacy helper: prepend a one-off YouTube snapshot (kept for backward compat). */
 async function buildYouTubeContext(url: string): Promise<string | null> {
@@ -104,10 +121,36 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
 
   const messages = buildInitialMessages(input, userContent);
 
+  // Assemble this agent's toolset: local tools + any Composio connector tools.
+  // Only load tools for CONNECTED apps; for unconnected ones, tell the model so
+  // it asks the user to connect instead of futilely calling a dead tool.
+  const localSchemas = getToolSchemas(input.tools);
+  let composioSchemas: typeof localSchemas = [];
+  if (input.connectors?.length) {
+    try {
+      const active = new Set(
+        (await listConnections()).filter((c) => c.status === 'ACTIVE').map((c) => c.slug)
+      );
+      const connected = input.connectors.filter((s) => active.has(s));
+      const notConnected = input.connectors.filter((s) => !active.has(s));
+      if (connected.length) composioSchemas = await getComposioTools(connected);
+      const sys = messages[0];
+      if (notConnected.length && sys.role === 'system') {
+        sys.content +=
+          `\n\n[Connections] Not connected yet: ${notConnected.join(', ')}. ` +
+          `If a task needs one of these, tell the user to connect it in the Connections panel — do not try to use it.`;
+      }
+    } catch (e) {
+      console.error('Composio tools unavailable:', e);
+    }
+  }
+  const toolSchemas = [...localSchemas, ...composioSchemas];
+  const composioNames = new Set(composioSchemas.map((s) => s.function.name));
+
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
       // Detection call: does the model want to use a tool, or answer now?
-      const resp: MeshAssistantMessage = await callMeshWithTools(messages, getToolSchemas(input.tools), {
+      const resp: MeshAssistantMessage = await callMeshWithTools(messages, toolSchemas, {
         model: input.model,
       });
 
@@ -115,14 +158,19 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
         // Record the assistant's tool-call turn, then run each tool.
         messages.push({ role: 'assistant', content: resp.content ?? '', tool_calls: resp.tool_calls });
         for (const call of resp.tool_calls) {
-          yield { type: 'status', content: TOOL_STATUS[call.function.name] ?? `Running ${call.function.name}…` };
+          const name = call.function.name;
+          const isComposio = composioNames.has(name);
+          yield {
+            type: 'status',
+            content: TOOL_STATUS[name] ?? (isComposio ? `Acting via ${prettyConnector(name)}…` : `Running ${name}…`),
+          };
           let args: Record<string, any> = {};
           try {
             args = call.function.arguments ? JSON.parse(call.function.arguments) : {};
           } catch {
             args = {};
           }
-          const result = await executeTool(call.function.name, args);
+          const result = isComposio ? await executeComposioTool(name, args) : await executeTool(name, args);
           messages.push({ role: 'tool', tool_call_id: call.id, content: result });
         }
         continue; // loop again with tool results in context

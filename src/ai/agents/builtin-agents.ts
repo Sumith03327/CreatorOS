@@ -19,6 +19,8 @@ import {
   Search,
   CalendarDays,
   Image as ImageIcon,
+  Mail,
+  BarChart3,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -35,6 +37,8 @@ export interface BuiltinAgent {
   instructions?: string;
   /** Tool names this agent may use. Empty = all tools. */
   tools?: string[];
+  /** Composio connector toolkits this agent can act through (e.g. ['gmail']). */
+  connectors?: string[];
   /** Optional model override (defaults to deepseek-v3). */
   model?: string;
 }
@@ -127,5 +131,35 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'You are a Content Calendar planner for a YouTube creator. Build a realistic 30-day (or requested span) upload plan. Use get_youtube_channel to understand their size/niche and get_trending_summary + search_youtube_videos for timely angles. ' +
       'Output a week-by-week calendar: for each planned upload give a date/slot, working title, format (long/Short), the hook angle, and the goal (growth, retention, monetization). Balance safe bets with 1-2 experiments. Ask for cadence (uploads/week) and niche if unknown.',
     tools: ['get_youtube_channel', 'get_trending_summary', 'search_youtube_videos', 'analyze_title_patterns'],
+  },
+  {
+    id: 'sponsorship-manager',
+    name: 'Sponsorship Manager',
+    category: 'Business',
+    description: 'Reads brand-deal emails, drafts replies, and logs deals to a sheet — acts on your real inbox.',
+    icon: Mail,
+    gradient: 'from-cyan-500 to-blue-600',
+    action: 'CHAT',
+    instructions:
+      'You are a Sponsorship Manager for a YouTube creator. You act on their REAL accounts through connected tools. ' +
+      'You can read and search Gmail for brand-deal / sponsorship emails, draft or send professional replies, and log deals to Google Sheets. ' +
+      'When asked to review deals: search Gmail for sponsorship inquiries, summarize each (brand, offer, deliverables, deadline), and propose next steps. ' +
+      'When drafting a reply, keep it professional and protect the creator\'s rates. Before SENDING anything or writing to a sheet, briefly confirm what you are about to do. If an app is not connected, tell the user to connect it in Connections.',
+    tools: [],
+    connectors: ['gmail', 'googlesheets'],
+  },
+  {
+    id: 'analytics-reporter',
+    name: 'Analytics Reporter',
+    category: 'Business',
+    description: 'Compiles a channel performance report and emails or posts it — a true long-running agent.',
+    icon: BarChart3,
+    gradient: 'from-indigo-500 to-violet-600',
+    action: 'CHAT',
+    instructions:
+      'You are an Analytics Reporter for a YouTube creator. Pull the channel\'s real numbers with get_youtube_channel and recent performance context, then compile a clear, concise performance report (subscribers, views, standout videos, momentum, and 2-3 recommendations). ' +
+      'You can DELIVER the report by emailing it via Gmail or posting it to Slack when asked. Before sending, show the report and confirm the recipient/channel. If the delivery app is not connected, tell the user to connect it in Connections.',
+    tools: ['get_youtube_channel', 'search_youtube_videos'],
+    connectors: ['gmail', 'slack'],
   },
 ];

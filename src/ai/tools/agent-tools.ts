@@ -321,12 +321,13 @@ export const AGENT_TOOL_SCHEMAS: MeshToolSchema[] = Object.values(REGISTRY).map(
 export const ALL_TOOL_NAMES = Object.keys(REGISTRY);
 
 /**
- * Resolve a per-agent toolset to Mesh schemas. Pass a list of tool names to
- * expose only those (unknown names are ignored); pass nothing/empty to expose
- * ALL tools (backward-compatible default).
+ * Resolve a per-agent toolset to Mesh schemas.
+ * - `undefined` → ALL tools (backward-compatible default for older agents).
+ * - a list → only those tools (unknown names ignored).
+ * - `[]` → NO local tools (e.g. a connector-only agent that acts solely via Composio).
  */
 export function getToolSchemas(names?: string[]): MeshToolSchema[] {
-  if (!names || names.length === 0) return AGENT_TOOL_SCHEMAS;
+  if (names === undefined) return AGENT_TOOL_SCHEMAS;
   return names.map((n) => REGISTRY[n]?.schema).filter(Boolean) as MeshToolSchema[];
 }
 

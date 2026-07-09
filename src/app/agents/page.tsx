@@ -17,6 +17,9 @@ import {
   Wand2,
   ArrowRight,
   Brain,
+  Plug,
+  RefreshCw,
+  Check,
 } from 'lucide-react';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { Button } from '@/components/ui/button';
@@ -35,6 +38,7 @@ import { updateAgentMemory } from '@/ai/flows/update-agent-memory';
 import * as store from '@/services/agent-store';
 import type { CustomAgent, ChatMessage } from '@/services/agent-store';
 import { BUILTIN_AGENTS, type BuiltinAgent } from '@/ai/agents/builtin-agents';
+import { getConnectorCatalog, getConnections, connectApp } from './connection-actions';
 
 // --- Types ---
 
@@ -142,6 +146,12 @@ export default function AgentsPage() {
   const [heroInput, setHeroInput] = useState('');
   const [drafting, setDrafting] = useState(false);
 
+  // Connections (Composio) state
+  const [connectorsEnabled, setConnectorsEnabled] = useState(false);
+  const [catalog, setCatalog] = useState<{ slug: string; name: string }[]>([]);
+  const [connStatus, setConnStatus] = useState<Record<string, string>>({});
+  const [connecting, setConnecting] = useState<string | null>(null);
+
   // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -154,7 +164,41 @@ export default function AgentsPage() {
   useEffect(() => {
     setMounted(true);
     store.listAgents().then(setAgents);
+    // Load connector catalog + current connection statuses.
+    getConnectorCatalog()
+      .then(({ enabled, connectors }) => {
+        setConnectorsEnabled(enabled);
+        setCatalog(connectors);
+        if (enabled) refreshConnections();
+      })
+      .catch(() => setConnectorsEnabled(false));
   }, []);
+
+  async function refreshConnections() {
+    try {
+      const conns = await getConnections();
+      const map: Record<string, string> = {};
+      for (const c of conns) map[c.slug] = c.status;
+      setConnStatus(map);
+    } catch (e) {
+      console.error('Failed to load connections:', e);
+    }
+  }
+
+  async function handleConnect(slug: string) {
+    setConnecting(slug);
+    try {
+      const { redirectUrl } = await connectApp(slug);
+      // Open Composio's OAuth page; the user authorizes there.
+      window.open(redirectUrl, '_blank', 'noopener,noreferrer');
+      toast({ title: 'Authorize in the new tab', description: 'After you approve access, click Refresh here.' });
+    } catch (err: any) {
+      console.error(err);
+      toast({ variant: 'destructive', title: 'Could not start connection', description: err?.message || 'Try again.' });
+    } finally {
+      setConnecting(null);
+    }
+  }
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -214,6 +258,7 @@ export default function AgentsPage() {
       instructions: b.instructions ?? '',
       useYouTubeContext: false,
       tools: b.tools,
+      connectors: b.connectors,
       model: b.model,
       memory: await store.getAgentMemory(b.id),
       createdAt: new Date().toISOString(),
@@ -309,6 +354,7 @@ export default function AgentsPage() {
           memory: agent.memory,
           model: agent.model,
           tools: agent.tools,
+          connectors: agent.connectors,
           youtubeUrl: agent.useYouTubeContext ? youtubeUrl : undefined,
         }),
       });
@@ -405,7 +451,10 @@ export default function AgentsPage() {
 
             {/* Built-in agents */}
             <section className="space-y-4">
-              <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Built-in Agents</h3>
+              <div className="flex items-baseline justify-between">
+                <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Built-in Agents</h3>
+                <span className="text-[11px] text-slate-400">{BUILTIN_AGENTS.length} agents · powered by your channel data</span>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {BUILTIN_AGENTS.map((b) => (
                   <Card
@@ -433,6 +482,48 @@ export default function AgentsPage() {
                 ))}
               </div>
             </section>
+
+            {/* Connections (Composio) — the "act on real work" layer */}
+            {connectorsEnabled && catalog.length > 0 && (
+              <section className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-[11px] font-bold uppercase tracking-widest text-slate-500">Connections</h3>
+                    <span className="text-[11px] text-slate-400">let agents act on your real apps</span>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={refreshConnections} className="gap-1.5 text-slate-500">
+                    <RefreshCw className="h-3.5 w-3.5" /> Refresh
+                  </Button>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+                  {catalog.map((c) => {
+                    const status = connStatus[c.slug];
+                    const connected = status === 'ACTIVE';
+                    return (
+                      <Card key={c.slug} className="border shadow-none">
+                        <CardContent className="p-4 flex flex-col items-center text-center gap-2">
+                          <div className={cn('h-9 w-9 rounded-xl flex items-center justify-center', connected ? 'bg-emerald-100 text-emerald-600' : 'bg-slate-100 text-slate-400')}>
+                            {connected ? <Check className="h-5 w-5" /> : <Plug className="h-5 w-5" />}
+                          </div>
+                          <p className="text-xs font-semibold text-slate-700">{c.name}</p>
+                          {connected ? (
+                            <span className="text-[10px] font-medium text-emerald-600">Connected</span>
+                          ) : (
+                            <button
+                              onClick={() => handleConnect(c.slug)}
+                              disabled={connecting === c.slug}
+                              className="text-[11px] font-medium text-primary hover:underline disabled:opacity-50"
+                            >
+                              {connecting === c.slug ? 'Opening…' : 'Connect'}
+                            </button>
+                          )}
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
 
             {/* Your agents */}
             <section className="space-y-4">
