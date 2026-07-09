@@ -229,7 +229,10 @@ export async function callMeshJson(messages: MeshLoopMessage[], model?: string):
   const message = await meshRequestRaw(messages, {
     responseFormat: { type: 'json_object' },
     model,
-    maxTokens: 3000,
+    // Deliverables (a full upload package, six ranked ideas) run long; a tight
+    // cap truncates the object mid-key and the parse fails.
+    maxTokens: 4000,
+    temperature: 0.3, // structure over creativity
   });
   return message.content ?? '';
 }

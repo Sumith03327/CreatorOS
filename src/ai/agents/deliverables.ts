@@ -17,6 +17,18 @@ export interface DeliverableSpec {
   composingLabel: string;
   /** The final instruction appended to the conversation. */
   instruction: string;
+  /**
+   * Ground the result against what the agent actually saw. Models will invent a
+   * plausible "outlier video" or confirm a chapter that isn't in the transcript;
+   * asking them not to is not enough. `toolOutputs` are the raw tool results
+   * from this run — anything claimed as evidence must appear there.
+   */
+  validate?: (parsed: any, toolOutputs: string[]) => any;
+}
+
+/** Case-insensitive haystack of everything the agent's tools returned. */
+function haystack(toolOutputs: string[]): string {
+  return toolOutputs.join('\n').toLowerCase();
 }
 
 // --- Typed results (mirrored by the UI renderers) --------------------------
@@ -92,6 +104,21 @@ export const DELIVERABLES: Record<string, DeliverableSpec> = {
       '`signal` names the evidence (an outlier, a gap, a trend). ' +
       '`evidence` MUST come from a real video you actually saw via your tools — if you have no real video, omit `evidence` entirely rather than inventing one. ' +
       '`why` is one sentence on why it fits this creator.',
+    // Strip any "evidence" whose video title never appeared in a tool result.
+    validate(parsed, toolOutputs) {
+      const hay = haystack(toolOutputs);
+      parsed.ideas = (parsed.ideas ?? []).map((idea: any) => {
+        const title = String(idea?.evidence?.videoTitle ?? '').toLowerCase().trim();
+        // Match on a prefix so minor truncation/quoting differences still count.
+        const seen = title.length >= 8 && hay.includes(title.slice(0, Math.min(40, title.length)));
+        if (!seen && idea?.evidence) {
+          const { evidence, ...rest } = idea;
+          return rest;
+        }
+        return idea;
+      });
+      return parsed;
+    },
   },
 
   'seo-optimizer': {
@@ -104,6 +131,21 @@ export const DELIVERABLES: Record<string, DeliverableSpec> = {
       'Chapters must start at 00:00, ascend, and be at least 10 seconds apart. ' +
       'Set `verified` to true ONLY for a chapter whose topic you actually found in the transcript; ' +
       'set it to false if you inferred or guessed it. Never invent a chapter and mark it verified.',
+    // Downgrade `verified` unless the label's own words show up in the transcript.
+    validate(parsed, toolOutputs) {
+      const hay = haystack(toolOutputs);
+      if (!hay) return parsed;
+      parsed.chapters = (parsed.chapters ?? []).map((c: any) => {
+        const words = String(c?.label ?? '')
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((w) => w.length > 4);
+        // A real chapter shares at least one substantive word with the transcript.
+        const grounded = words.length > 0 && words.some((w) => hay.includes(w));
+        return { ...c, verified: Boolean(c?.verified) && grounded };
+      });
+      return parsed;
+    },
   },
 
   'sponsorship-manager': {

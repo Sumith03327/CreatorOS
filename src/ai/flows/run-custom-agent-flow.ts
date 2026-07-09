@@ -16,7 +16,7 @@ import {
   type MeshLoopMessage,
   type MeshAssistantMessage,
 } from '@/services/mesh';
-import { getDeliverable } from '@/ai/agents/deliverables';
+import { getDeliverable, type DeliverableSpec } from '@/ai/agents/deliverables';
 import { getToolSchemas, executeTool } from '@/ai/tools/agent-tools';
 import { getComposioTools, executeComposioTool, listConnections } from '@/services/composio';
 import { resolveSkills, buildSkillIndex, getSkill } from '@/ai/skills';
@@ -53,6 +53,7 @@ export type AgentEvent =
   | { type: 'status'; content: string } // e.g. "Reading channel…"
   | { type: 'text'; content: string } // a chunk of the final answer
   | { type: 'deliverable'; content: string } // a typed JSON result for a dedicated UI
+  | { type: 'ping' } // keep-alive during a long compose; clients ignore it
   | { type: 'error'; content: string };
 
 // Raised from 5: loading a skill consumes a step, and agents should still have
@@ -84,6 +85,69 @@ function extractJson(raw: string): string | null {
     return candidate;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Compose the typed deliverable. Models occasionally return prose or a cut-off
+ * object; retry once with a blunt correction before giving up.
+ */
+async function composeDeliverable(
+  messages: MeshLoopMessage[],
+  instruction: string,
+  model?: string
+): Promise<string | null> {
+  messages.push({ role: 'user', content: instruction });
+  const first = extractJson(await callMeshJson(messages, model));
+  if (first) return first;
+
+  messages.push({
+    role: 'user',
+    content:
+      'Your last reply was not valid JSON. Reply with ONLY the JSON object — no prose, no code fences, no commentary. Keep it compact.',
+  });
+  return extractJson(await callMeshJson(messages, model));
+}
+
+/**
+ * Ground the deliverable against what the agent actually saw, then re-serialize.
+ * If validation throws, fall back to the raw JSON rather than losing the run.
+ */
+function groundDeliverable(spec: DeliverableSpec, json: string, toolOutputs: string[]): string {
+  if (!spec.validate) return json;
+  try {
+    return JSON.stringify(spec.validate(JSON.parse(json), toolOutputs));
+  } catch (e) {
+    console.error('deliverable validation failed (using raw):', e);
+    return json;
+  }
+}
+
+/**
+ * Compose the deliverable while emitting a keep-alive every few seconds. A JSON
+ * compose (plus a possible retry) can run for a minute with zero bytes on the
+ * wire, which clients and proxies treat as a dead stream.
+ */
+async function* composeWithHeartbeat(
+  messages: MeshLoopMessage[],
+  instruction: string,
+  model?: string
+): AsyncGenerator<AgentEvent, string | null, unknown> {
+  const work = composeDeliverable(messages, instruction, model);
+  const TICK: unique symbol = Symbol('tick') as any;
+
+  while (true) {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = new Promise<typeof TICK>((resolve) => {
+      timer = setTimeout(() => resolve(TICK), 8000);
+    });
+    const winner = await Promise.race([work, tick]);
+    clearTimeout(timer!);
+    if (winner === TICK) {
+      yield { type: 'ping' };
+      continue;
+    }
+    return winner as string | null;
   }
 }
 
@@ -210,15 +274,27 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
 
   // Skills: expose `load_skill` only when this agent actually has skills.
   const agentSkills = resolveSkills(input.skills);
-  const skillSchemas = agentSkills.length ? [buildLoadSkillSchema(agentSkills.map((s) => s.name))] : [];
-
-  const toolSchemas = [...localSchemas, ...composioSchemas, ...skillSchemas];
+  /** Guards against a model re-loading the same playbook every step. */
+  const loadedSkills = new Set<string>();
   const composioNames = new Set(composioSchemas.map((s) => s.function.name));
+  /** Everything the agent's tools returned — the ground truth for validation. */
+  const toolOutputs: string[] = [];
+
+  /**
+   * Rebuilt each step: `load_skill` only offers the skills not yet loaded, and
+   * disappears entirely once they all are. Without this, models happily call it
+   * every iteration until the step cap, which is slow and bloats the context.
+   */
+  const currentToolSchemas = () => {
+    const remaining = agentSkills.filter((s) => !loadedSkills.has(s.name)).map((s) => s.name);
+    const skillSchemas = remaining.length ? [buildLoadSkillSchema(remaining)] : [];
+    return [...localSchemas, ...composioSchemas, ...skillSchemas];
+  };
 
   try {
     for (let step = 0; step < MAX_STEPS; step++) {
       // Detection call: does the model want to use a tool, or answer now?
-      const resp: MeshAssistantMessage = await callMeshWithTools(messages, toolSchemas, {
+      const resp: MeshAssistantMessage = await callMeshWithTools(messages, currentToolSchemas(), {
         model: input.model,
       });
 
@@ -241,16 +317,25 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
           if (name === 'load_skill') {
             const requested = String(args.skill ?? '');
             const skill = agentSkills.find((s) => s.name === requested) ? getSkill(requested) : null;
-            yield { type: 'status', content: `Loading skill: ${skill?.title ?? requested}…` };
-            result = skill
-              ? skill.content
-              : `tool failed: "${requested}" is not one of your skills. Available: ${agentSkills.map((s) => s.name).join(', ')}.`;
+            if (!skill) {
+              result = `tool failed: "${requested}" is not one of your skills. Available: ${agentSkills.map((s) => s.name).join(', ')}.`;
+            } else if (loadedSkills.has(requested)) {
+              // Re-sending a playbook balloons the context and can truncate the
+              // final answer. Acknowledge instead, and push the model to answer.
+              result = `"${skill.title}" is already loaded and above in this conversation. Do not load it again — use it and produce your answer now.`;
+            } else {
+              loadedSkills.add(requested);
+              yield { type: 'status', content: `Loading skill: ${skill.title}…` };
+              result = skill.content;
+            }
           } else {
             yield {
               type: 'status',
               content: TOOL_STATUS[name] ?? (isComposio ? `Acting via ${prettyConnector(name)}…` : `Running ${name}…`),
             };
             result = isComposio ? await executeComposioTool(name, args) : await executeTool(name, args);
+            // Skill playbooks aren't evidence, so only real tool results count.
+            toolOutputs.push(result);
           }
 
           messages.push({ role: 'tool', tool_call_id: call.id, content: result });
@@ -263,11 +348,9 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
       // Workspace mode: compose a typed deliverable instead of prose.
       if (spec) {
         yield { type: 'status', content: spec.composingLabel };
-        messages.push({ role: 'user', content: spec.instruction });
-        const raw = await callMeshJson(messages, input.model);
-        const json = extractJson(raw);
+        const json = yield* composeWithHeartbeat(messages, spec.instruction, input.model);
         if (json) {
-          yield { type: 'deliverable', content: json };
+          yield { type: 'deliverable', content: groundDeliverable(spec, json, toolOutputs) };
           return;
         }
         yield { type: 'error', content: 'The agent could not produce a structured result. Try again.' };
@@ -289,10 +372,8 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
     // Hit the step cap with tools still pending — force a final answer, no tools.
     if (spec) {
       yield { type: 'status', content: spec.composingLabel };
-      messages.push({ role: 'user', content: spec.instruction });
-      const raw = await callMeshJson(messages, input.model);
-      const json = extractJson(raw);
-      if (json) yield { type: 'deliverable', content: json };
+      const json = yield* composeWithHeartbeat(messages, spec.instruction, input.model);
+      if (json) yield { type: 'deliverable', content: groundDeliverable(spec, json, toolOutputs) };
       else yield { type: 'error', content: 'The agent could not produce a structured result. Try again.' };
       return;
     }
