@@ -1,39 +1,164 @@
-# Creator Hub - YouTube Growth SaaS (Standalone)
+# CreatorOS
 
-This project is a standalone YouTube content strategy dashboard optimized for local development.
+**Agents that read, decide, and act on a YouTube creator's real work.**
 
-## 🚀 Fix for Large File Error (GitHub 100MB Limit)
+Built for the [Mesh API Hackathon 2026](https://hack.meshapi.ai). Nine agents share one engine — tool-calling, expert skills, durable memory, streaming — and they act on your *actual* accounts (Gmail, Sheets, Notion, Slack) through Composio's 1,000+ connectors.
 
-If you see an error about `creator-hub.zip` being too large, run these commands in your terminal to fix it:
+---
+
+## Every AI call routes through Mesh
+
+This is the hackathon's hard requirement, so here is how to verify it in ten seconds.
+
+**Every model call goes through [`src/services/mesh.ts`](src/services/mesh.ts) or [`src/services/mesh-image.ts`](src/services/mesh-image.ts).** No provider SDK is imported anywhere in `src/`, and the only AI host contacted is `api.meshapi.ai`.
 
 ```bash
-# 1. Remove the zip file from your computer
-rm creator-hub.zip
+# Every Mesh entry point. All AI traffic funnels through these:
+grep -nE "^export (async )?function\*? " src/services/mesh.ts
+#   callMesh          — single-turn JSON
+#   callMeshText      — single-turn text
+#   callMeshChat      — multi-turn chat
+#   callMeshVision    — multimodal (reads a channel's thumbnails)
+#   callMeshWithTools — one step of the tool-calling loop
+#   callMeshJson      — typed deliverables
+#   streamMeshChat    — SSE token streaming
 
-# 2. Remove the zip file from Git's memory
-git rm --cached creator-hub.zip
+# The only AI hosts contacted anywhere in src/:
+grep -rhoE "https://api\.meshapi\.ai[a-z/0-9.]*" src/services/*.ts | sort -u
+#   https://api.meshapi.ai/v1/chat/completions
+#   https://api.meshapi.ai/v1          → /images/generations, /images/edits
 
-# 3. Fix your last commit
-git commit --amend -m "Initial commit - removed large zip"
+# Direct provider calls (prints nothing):
+grep -rlE "api\.openai\.com|generativelanguage|anthropic\.com|api\.deepseek" src/
 
-# 4. Push to your repository
-git push -u origin main --force
+# Provider SDKs imported in our source (prints nothing):
+grep -rnE "from ['\"](openai|@anthropic-ai/|@google/generative-ai)['\"]" src/
 ```
 
-## Local Setup
-1. Clone this repository or download the files.
-2. Run `npm install` to install dependencies.
-3. Configure your `.env` file with your API keys (YouTube & DeepSeek).
-4. Run `npm run dev` to start the development server.
+> **One honest footnote.** `openai` does appear in `node_modules` — it is a *peer dependency of `@composio/core`*, the connector SDK. We never import it, and no model call touches it. The two greps above prove it.
 
-## GitHub Setup (LFS Enabled)
+## Multi-model: the right model for the job
+
+One gateway, four models, chosen per task — the reason a unified LLM gateway earns its keep.
+
+| Task | Model | Where |
+|---|---|---|
+| Reasoning, agent loop, typed deliverables | `deepseek-ai/deepseek-v3` | `mesh.ts` (default) |
+| Vision — reading a channel's thumbnails | `openai/gpt-4o-mini` | `callMeshVision` |
+| Text → image thumbnails | `openai/gpt-image-1` | `mesh-image.ts` · `GEN_MODEL` |
+| **Identity-preserving** image edits | `google/gemini-2.5-flash-image` | `mesh-image.ts` · `EDIT_MODEL` |
+
+The image path has a real fallback chain — Nano Banana → `gpt-image-1` → text-to-image — so it never hard-fails.
+
+---
+
+## What makes it different
+
+### 1. Thumbnails with *your* face, from just a channel link
+
+Paste a channel URL. The agent reads that channel's recent thumbnails with vision, extracts the style **and** the recurring creator, then generates new thumbnails featuring the **actual creator's face** — with no photo upload.
+
+`gpt-image-1` invents a random stranger when given no reference. Switching the reference engine to `gemini-2.5-flash-image` and feeding it the channel's own thumbnails as references fixed it. Verified live against a real creator's channel.
+
+### 2. Agents that act on real accounts
+
+Connect Gmail — or any of Composio's **1,047** apps — once, and every agent can use it as a tool. Composio returns tools already in OpenAI function-calling shape, so they drop straight into the Mesh tool loop.
+
+The **Sponsorship Manager** searches your real inbox, triages each brand deal, and flags the scope terms the brand quietly left out.
+
+Agents only load tools for apps that are actually connected; for the rest they tell you to connect them rather than failing in a loop.
+
+### 3. Agents that cannot cite what they never saw
+
+Models invent evidence, and asking them not to is not enough — ours fabricated an outlier video (*"CodeWithMe — 150K views / 5K subs"*) that never existed.
+
+So deliverables are **grounded server-side** ([`deliverables.ts`](src/ai/agents/deliverables.ts)):
+
+- A Trend Scout idea whose evidence video never appeared in a tool result gets its evidence **stripped**.
+- An SEO chapter stays `verified` only if its words appear in the **real transcript**.
+
+### 4. Skills — expert playbooks, loaded on demand
+
+Nine playbooks in [`src/ai/skills/`](src/ai/skills/): hook writing, CTR title patterns, retention structure, YouTube SEO, repurposing, channel strategy, sponsorship negotiation, opportunity scoring, analytics interpretation.
+
+Only the **index** (one line per skill) lives in the system prompt. The agent calls `load_skill` to pull a full playbook *when the task actually needs it* — progressive disclosure, so prompts stay lean and output stays expert. You watch it happen: `📚 Loading skill: CTR Title Patterns…`
+
+---
+
+## Architecture
+
+An agent is **data, not code**:
+
+```ts
+{
+  instructions: "You are the Title & Hook Doctor…",
+  tools:       ['analyze_title_patterns', 'get_video_transcript'], // 6 local tools
+  skills:      ['ctr-title-patterns', 'hook-writing'],             // loaded on demand
+  connectors:  ['gmail', 'googlesheets'],                          // Composio · 1,047 apps
+  deliverable: 'title-doctor',                                     // typed JSON → dedicated UI
+}
+```
+
+The loop ([`run-custom-agent-flow.ts`](src/ai/flows/run-custom-agent-flow.ts)) resolves tools, skills and connectors, runs a bounded tool-calling loop, then either streams prose (chat mode) or composes a **typed deliverable** that a dedicated interface renders — a score dial, an opportunity board, a YouTube upload simulator, a deal inbox.
+
+```
+src/
+  services/mesh.ts         ← every AI call goes through here
+  services/mesh-image.ts   ← image gen + identity-preserving edits
+  services/composio.ts     ← 1,047 connector apps as agent tools
+  ai/agents/               ← agent registry + deliverable schemas
+  ai/skills/               ← 9 expert playbooks
+  ai/tools/agent-tools.ts  ← YouTube + analysis tools
+  ai/flows/                ← the agent loop and analysis flows
+  components/agents/workspace/  ← the dedicated interfaces
+```
+
+## The agents
+
+| Agent | Acts on | Interface |
+|---|---|---|
+| Thumbnail Studio | — | Studio (3-step) |
+| Title & Hook Doctor | — | Score dial + rewrites |
+| Trend Scout | — | Opportunity board |
+| SEO Optimizer | — | Upload simulator |
+| Sponsorship Manager | **Gmail · Sheets** | Deal inbox + rate calculator |
+| Analytics Reporter | **Gmail · Slack** | Chat |
+| Script Writer · Video Repurposer · Content Calendar | — | Chat |
+
+Plus **build your own** — describe an agent in one sentence and it drafts the prompt, category and skills.
+
+---
+
+## Setup
+
 ```bash
-git init
-git lfs install
-git add .gitattributes
-git remote add origin https://github.com/Sumith03327/lunixity.git
-git add .
-git commit -m "Standalone Creator Hub with LFS"
-git branch -M main
-git push -u origin main --force
+npm install
+npm run dev          # http://localhost:9002 → /agents
 ```
+
+Create `.env.local`:
+
+```bash
+MESH_API_KEY_ALL=…   # Mesh key with access to all models (preferred)
+MESH_API_KEY=…       # fallback; may be scoped to a single model
+COMPOSIO_API_KEY=…   # Composio *Developer Platform* key (ak_…), not the MCP consumer key
+YOUTUBE_API_KEY=…    # YouTube Data API v3
+```
+
+Then open `/agents`, hit **Connect** on Gmail in the Connections panel, and ask the Sponsorship Manager to check your inbox.
+
+## Verify
+
+```bash
+npm run typecheck      # types
+npm run check:metrics  # pins the Research scoring maths against known regressions
+```
+
+---
+
+## Honest limits
+
+- **Persistence is client-side today.** The storage layer sits behind one interface (`agent-store.ts`), so swapping in a real backend is a single-file change.
+- **Identity preservation is very good, not a forensic face swap.** A clean headshot still beats channel thumbnails.
+- **Some Composio apps need custom OAuth credentials.** The Connections browser only offers **Connect** where Composio manages the auth, and says so where it doesn't.
+- **Agents run on request, not on a schedule.** Delivery to Gmail/Slack is on demand; there is no cron yet.
