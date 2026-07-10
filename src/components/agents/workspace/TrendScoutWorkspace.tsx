@@ -19,6 +19,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { TrendScoutResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
@@ -176,7 +177,19 @@ export function TrendScoutWorkspace({ agent, onBack }: { agent: BuiltinAgent; on
         <section className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
           <div className="flex items-center justify-between">
             <SectionLabel accent="bg-emerald-400">Opportunity board</SectionLabel>
-            <span className="text-[11px] font-mono text-slate-500">{ideas.length} ideas · ranked</span>
+            <div className="flex items-center gap-3">
+              <span className="text-[11px] font-mono text-slate-500">{ideas.length} ideas · ranked</span>
+              <SendToMenu
+                title={`Content opportunities — ${niche.trim() || 'my niche'}`}
+                body={ideas
+                  .map(
+                    (i, n) =>
+                      `${n + 1}. ${i.title}\n   Score: ${i.score}/10 | Saturation: ${i.saturation} | Effort: ${i.effort}\n   Signal: ${i.signal}\n   Why: ${i.why}` +
+                      (i.evidence ? `\n   Evidence: "${i.evidence.videoTitle}" — ${i.evidence.channel} (${i.evidence.views} views / ${i.evidence.subscribers} subs)` : '')
+                  )
+                  .join('\n\n')}
+              />
+            </div>
           </div>
 
           {ideas.length === 0 && (

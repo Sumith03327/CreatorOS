@@ -18,6 +18,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { SponsorshipResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
@@ -221,7 +222,27 @@ export function SponsorshipWorkspace({ agent, onBack }: { agent: BuiltinAgent; o
           <section className="space-y-4">
             <div className="flex items-center justify-between">
               <SectionLabel accent="bg-cyan-400">Deal inbox</SectionLabel>
-              <span className="text-[11px] font-mono text-slate-500">{deals.length} deal{deals.length === 1 ? '' : 's'}</span>
+              <div className="flex items-center gap-3">
+                <span className="text-[11px] font-mono text-slate-500">{deals.length} deal{deals.length === 1 ? '' : 's'}</span>
+                {deals.length > 0 && (
+                  <SendToMenu
+                    title="Sponsorship pipeline"
+                    body={deals
+                      .map((d) =>
+                        [
+                          `Brand: ${d.brand}`,
+                          `From: ${d.from ?? '-'}`,
+                          `Offer: ${d.offer ?? '-'}`,
+                          `Deliverable: ${d.deliverable ?? '-'}`,
+                          `Deadline: ${d.deadline ?? '-'}`,
+                          `Missing terms: ${(d.missing ?? []).join(', ') || 'none'}`,
+                          `Summary: ${d.summary}`,
+                        ].join('\n')
+                      )
+                      .join('\n\n')}
+                  />
+                )}
+              </div>
             </div>
             {deals.length === 0 ? (
               <div className="cc-card p-8 text-center text-sm text-slate-500">

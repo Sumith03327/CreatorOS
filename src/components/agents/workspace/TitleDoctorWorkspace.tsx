@@ -18,6 +18,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { TitleDoctorResult, Lever } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
@@ -215,7 +216,23 @@ export function TitleDoctorWorkspace({ agent, onBack }: { agent: BuiltinAgent; o
 
           {/* Rewrites */}
           <section className="space-y-4">
-            <SectionLabel accent="bg-amber-400">Stronger rewrites</SectionLabel>
+            <div className="flex items-center justify-between">
+              <SectionLabel accent="bg-amber-400">Stronger rewrites</SectionLabel>
+              <SendToMenu
+                title={`Title options — ${title.slice(0, 60)}`}
+                body={[
+                  `Original: ${title}`,
+                  `Score: ${result.score}/10`,
+                  `Verdict: ${result.verdict}`,
+                  '',
+                  'Rewrites:',
+                  ...(result.rewrites ?? []).map(
+                    (r, n) => `${n + 1}. ${r.title}  [${(r.levers ?? []).join(', ')}]`
+                  ),
+                  ...(result.hook?.line ? ['', `Hook: ${result.hook.line}`] : []),
+                ].join('\n')}
+              />
+            </div>
             <div className="grid gap-3">
               {result.rewrites?.map((r, i) => (
                 <div key={i} className="cc-card cc-card-hover p-4 group">

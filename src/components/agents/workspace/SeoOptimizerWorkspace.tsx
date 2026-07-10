@@ -19,6 +19,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { SeoResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
@@ -182,6 +183,19 @@ export function SeoOptimizerWorkspace({ agent, onBack }: { agent: BuiltinAgent; 
       {/* RESULT */}
       {result && phase === 'done' && (
         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
+          <div className="flex items-center justify-between">
+            <SectionLabel accent="bg-lime-400">Upload package</SectionLabel>
+            <SendToMenu
+              title="YouTube upload package"
+              body={[
+                'DESCRIPTION\n' + (result.description ?? ''),
+                'CHAPTERS\n' + (result.chapters ?? []).map((c) => `${c.time} ${c.label}${c.verified ? '' : '  (unverified)'}`).join('\n'),
+                'TAGS\n' + (result.tags ?? []).join(', '),
+                'PINNED COMMENT\n' + (result.pinnedComment ?? ''),
+              ].join('\n\n')}
+            />
+          </div>
+
           {result.description && <DescriptionPreview description={result.description} />}
 
           {result.chapters?.length > 0 && <ChapterValidator chapters={result.chapters} />}
