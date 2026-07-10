@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -38,10 +39,51 @@ interface FilterState {
   niche: string;
   sortBy: string;
   perPage: number;
+  channelSize: string;
+  maxAge: string;
+  formatFocus: string;
+  breakoutsOnly: boolean;
 }
 
-const DEFAULT_FILTERS: FilterState = { niche: 'Finance', sortBy: 'momentum', perPage: 12 };
+const DEFAULT_FILTERS: FilterState = {
+  niche: 'Finance',
+  sortBy: 'momentum',
+  perPage: 12,
+  channelSize: 'any',
+  maxAge: 'any',
+  formatFocus: 'any',
+  breakoutsOnly: false,
+};
+
 const PER_PAGE_OPTIONS = [12, 24, 36];
+
+/**
+ * Subscriber bands and the age cap are sent to the fetch, not applied to its
+ * results — sampling a channel's uploads costs quota, and we'd rather not pay for
+ * sixty channels to display four. A creator with 3K subs wants the 10K–100K band,
+ * where the playbook still transfers.
+ */
+const CHANNEL_SIZES = [
+  { label: 'Any size', value: 'any', subscriberMin: undefined, subscriberMax: undefined },
+  { label: 'Nano (<10K)', value: 'nano', subscriberMin: undefined, subscriberMax: 10_000 },
+  { label: 'Micro (10K–100K)', value: 'micro', subscriberMin: 10_000, subscriberMax: 100_000 },
+  { label: 'Mid (100K–1M)', value: 'mid', subscriberMin: 100_000, subscriberMax: 1_000_000 },
+  { label: 'Large (>1M)', value: 'large', subscriberMin: 1_000_000, subscriberMax: undefined },
+];
+
+const AGE_OPTIONS = [
+  { label: 'Any age', value: 'any', maxAgeMonths: undefined },
+  { label: 'Under 12 months', value: '12', maxAgeMonths: 12 },
+  { label: 'Under 24 months', value: '24', maxAgeMonths: 24 },
+  { label: 'Under 3 years', value: '36', maxAgeMonths: 36 },
+];
+
+const FORMAT_OPTIONS = [
+  { label: 'Any format', value: 'any' },
+  { label: 'Winning with long-form', value: 'long' },
+  { label: 'Winning with Shorts', value: 'shorts' },
+  { label: 'Mixed', value: 'mixed' },
+];
 
 // Matches the 6h window used for trending videos on the Content tab.
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
@@ -58,15 +100,43 @@ export default function ChannelInsightsPage() {
   const [watchlistItems, setWatchlistItems] = useState<WatchlistChannel[]>([]);
   const [isWatchlistOpen, setIsWatchlistOpen] = useState(false);
   const [resilienceMode, setResilienceMode] = useState(false);
+  const [customNiches, setCustomNiches] = useState<string[]>([]);
+  const [customNicheInput, setCustomNicheInput] = useState('');
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  const customInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setMounted(true);
     setWatchlistItems(getChannelWatchlist());
   }, []);
 
+  useEffect(() => {
+    if (showCustomInput) customInputRef.current?.focus();
+  }, [showCustomInput]);
+
+  const addCustomNiche = () => {
+    const trimmed = customNicheInput.trim();
+    if (trimmed && !RESEARCH_NICHES.includes(trimmed) && !customNiches.includes(trimmed)) {
+      setCustomNiches(prev => [...prev, trimmed]);
+      updateFilter('niche', trimmed);
+    }
+    setCustomNicheInput('');
+    setShowCustomInput(false);
+  };
+
+  const removeCustomNiche = (niche: string) => {
+    setCustomNiches(prev => prev.filter(item => item !== niche));
+    if (filters.niche === niche) updateFilter('niche', RESEARCH_NICHES[0]);
+  };
+
   const fetchInsights = useCallback(
     async (isManualRefresh = false) => {
-      const cacheRef = doc('channelInsightsCache', `channels_${filters.niche.replace(/\s+/g, '')}`);
+      const size = CHANNEL_SIZES.find(s => s.value === filters.channelSize);
+      const age = AGE_OPTIONS.find(a => a.value === filters.maxAge);
+      // Format focus and "breakouts only" are computed from data we already have,
+      // so they filter client-side and must not fragment the cache.
+      const cacheKey = `channels_${filters.niche.replace(/\s+/g, '')}_${filters.channelSize}_${filters.maxAge}`;
+      const cacheRef = doc('channelInsightsCache', cacheKey);
       setIsLoading(true);
       setResilienceMode(false);
 
@@ -80,7 +150,11 @@ export default function ChannelInsightsPage() {
           return;
         }
 
-        const freshData = await fetchBoomingChannels(filters.niche);
+        const freshData = await fetchBoomingChannels(filters.niche, {
+          subscriberMin: size?.subscriberMin,
+          subscriberMax: size?.subscriberMax,
+          maxAgeMonths: age?.maxAgeMonths,
+        });
         if (freshData.length > 0) {
           setData(freshData);
           setDoc(cacheRef, { channels: freshData, cachedAt: serverTimestamp() });
@@ -100,7 +174,7 @@ export default function ChannelInsightsPage() {
         setIsLoading(false);
       }
     },
-    [filters.niche]
+    [filters.niche, filters.channelSize, filters.maxAge]
   );
 
   useEffect(() => {
@@ -151,9 +225,15 @@ export default function ChannelInsightsPage() {
       momentum: (a, b) => b.growthScore - a.growthScore,
       lift: (a, b) => b.lift - a.lift,
       subs: (a, b) => toNum(b.statistics.subscriberCount) - toNum(a.statistics.subscriberCount),
+      cadence: (a, b) => b.uploadsPerMonth - a.uploadsPerMonth,
     };
-    return [...data].sort(comparators[filters.sortBy] ?? comparators.momentum).slice(0, filters.perPage);
-  }, [data, filters.sortBy, filters.perPage]);
+
+    return data
+      .filter(channel => !filters.breakoutsOnly || channel.isBreakout)
+      .filter(channel => filters.formatFocus === 'any' || channel.formatFocus === filters.formatFocus)
+      .sort(comparators[filters.sortBy] ?? comparators.momentum)
+      .slice(0, filters.perPage);
+  }, [data, filters.sortBy, filters.perPage, filters.breakoutsOnly, filters.formatFocus]);
 
   const viewAnalytics = (channelId: string) =>
     router.push(`/?url=${encodeURIComponent(`https://www.youtube.com/channel/${channelId}`)}`);
@@ -239,30 +319,96 @@ export default function ChannelInsightsPage() {
                   {niche}
                 </Button>
               ))}
+              {customNiches.map(niche => (
+                <Button
+                  key={niche}
+                  variant={filters.niche === niche ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => updateFilter('niche', niche)}
+                  className={cn('group gap-2 rounded-full pl-5 pr-3', filters.niche === niche && 'bg-[#7B5CF0]')}
+                >
+                  {niche}
+                  <X
+                    className="h-3 w-3"
+                    onClick={e => {
+                      e.stopPropagation();
+                      removeCustomNiche(niche);
+                    }}
+                  />
+                </Button>
+              ))}
+              {!showCustomInput ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowCustomInput(true)}
+                  className="rounded-full border-dashed px-5"
+                >
+                  + Custom
+                </Button>
+              ) : (
+                <Input
+                  ref={customInputRef}
+                  placeholder="Niche…"
+                  value={customNicheInput}
+                  onChange={e => setCustomNicheInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addCustomNiche()}
+                  onBlur={addCustomNiche}
+                  className="h-9 w-36 rounded-full border-[#7B5CF0]"
+                />
+              )}
             </div>
-            <div className="flex items-center gap-4">
-              <Select value={filters.sortBy} onValueChange={value => updateFilter('sortBy', value)}>
-                <SelectTrigger className="w-48 rounded-xl border-none bg-slate-50">
-                  <SelectValue placeholder="Sort By" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="momentum">Momentum</SelectItem>
-                  <SelectItem value="lift">Beating their own average</SelectItem>
-                  <SelectItem value="subs">Subscribers</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={String(filters.perPage)} onValueChange={value => updateFilter('perPage', parseInt(value))}>
-                <SelectTrigger className="w-32 rounded-xl border-none bg-slate-50">
-                  <SelectValue placeholder="Show" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PER_PAGE_OPTIONS.map(n => (
-                    <SelectItem key={n} value={String(n)}>
-                      Show {n}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <FilterSelect label="Sort by" value={filters.sortBy} onChange={v => updateFilter('sortBy', v)} width="w-52">
+                <SelectItem value="momentum">Momentum</SelectItem>
+                <SelectItem value="lift">Beating their own back catalogue</SelectItem>
+                <SelectItem value="subs">Subscribers</SelectItem>
+                <SelectItem value="cadence">Upload cadence</SelectItem>
+              </FilterSelect>
+
+              <FilterSelect label="Size" value={filters.channelSize} onChange={v => updateFilter('channelSize', v)} width="w-44">
+                {CHANNEL_SIZES.map(size => (
+                  <SelectItem key={size.value} value={size.value}>
+                    {size.label}
+                  </SelectItem>
+                ))}
+              </FilterSelect>
+
+              <FilterSelect label="Age" value={filters.maxAge} onChange={v => updateFilter('maxAge', v)} width="w-40">
+                {AGE_OPTIONS.map(age => (
+                  <SelectItem key={age.value} value={age.value}>
+                    {age.label}
+                  </SelectItem>
+                ))}
+              </FilterSelect>
+
+              <FilterSelect label="Format" value={filters.formatFocus} onChange={v => updateFilter('formatFocus', v)} width="w-48">
+                {FORMAT_OPTIONS.map(format => (
+                  <SelectItem key={format.value} value={format.value}>
+                    {format.label}
+                  </SelectItem>
+                ))}
+              </FilterSelect>
+
+              <FilterSelect label="Show" value={String(filters.perPage)} onChange={v => updateFilter('perPage', parseInt(v))} width="w-28">
+                {PER_PAGE_OPTIONS.map(n => (
+                  <SelectItem key={n} value={String(n)}>
+                    {n}
+                  </SelectItem>
+                ))}
+              </FilterSelect>
+
+              <Button
+                variant={filters.breakoutsOnly ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => updateFilter('breakoutsOnly', !filters.breakoutsOnly)}
+                className={cn('mt-5 h-10 gap-2 rounded-xl text-xs font-bold', filters.breakoutsOnly && 'bg-rose-500 hover:bg-rose-600')}
+              >
+                <Rocket className="h-3.5 w-3.5" />
+                Breakouts only
+                <Badge className="border-none bg-white/20 px-1.5 text-[10px] tabular-nums">{breakouts.length}</Badge>
+              </Button>
             </div>
           </div>
 
@@ -327,6 +473,32 @@ export default function ChannelInsightsPage() {
   );
 }
 
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  width,
+  children,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  width: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{label}</p>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className={cn('h-10 rounded-xl border-none bg-slate-50 text-xs', width)}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>{children}</SelectContent>
+      </Select>
+    </div>
+  );
+}
+
 function ChannelCard({
   channel,
   niche,
@@ -370,6 +542,11 @@ function ChannelCard({
               </span>
               {channel.isBreakout && (
                 <Badge className="border-none bg-rose-500 text-[8px] font-bold uppercase text-white">Breakout</Badge>
+              )}
+              {channel.formatFocus !== 'mixed' && (
+                <Badge className="border-none bg-slate-100 text-[8px] font-bold uppercase text-slate-500">
+                  {channel.formatFocus === 'shorts' ? 'Shorts' : 'Long-form'}
+                </Badge>
               )}
             </div>
           </div>
@@ -415,7 +592,9 @@ function ChannelCard({
             <TooltipContent className="max-w-64">
               <p className="text-xs">
                 {MOMENTUM_EXPLANATION}
-                {!channel.hasRecentData && ' We could not sample this channel\'s recent uploads, so treat this as provisional.'}
+                {channel.poolVideoCount > 0 &&
+                  ` Found via ${channel.poolVideoCount} of this niche's current top ${channel.poolVideoCount === 1 ? 'video' : 'videos'}.`}
+                {!channel.hasRecentData && " We couldn't sample enough settled uploads, so treat this as provisional."}
               </p>
             </TooltipContent>
           </Tooltip>

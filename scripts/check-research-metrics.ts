@@ -18,6 +18,7 @@ import {
   median,
   computeVph,
   momentumTier,
+  overlapCoefficient,
 } from '../src/lib/research-metrics';
 
 let failures = 0;
@@ -71,6 +72,8 @@ check('cooling lift below 1', cooling.lift < 1, true);
 check('rising channel scores high', rising.score > 60, true);
 check('rising lift ~4x', Math.round(rising.lift), 4);
 check('flat lift is exactly 1', flat.lift, 1);
+// Flat is not momentum. It must not land halfway up the scale.
+check('flat channel reads as Rising at most', flat.score < 50, true);
 check('rising beats cooling', rising.score > cooling.score, true);
 check('rising flagged breakout', rising.isBreakout, true);
 check('cooling not breakout', cooling.isBreakout, false);
@@ -85,12 +88,26 @@ const onlyFresh = computeMomentum({
 check('all-fresh channel still returns a sample', onlyFresh.sampleSize > 0, true);
 check('all-fresh channel has no lift (no back catalogue)', onlyFresh.lift, 0);
 
-// A channel with too little back catalogue is scored on velocity alone, not dragged to 0.
-const noPrior = computeMomentum({
+// A genuinely new channel has no back catalogue because it has barely published.
+// Its velocity is the whole truth about it, so it is scored on velocity alone.
+const newAndHot = computeMomentum({
   uploads: Array.from({ length: 4 }, (_, i) => ({ views: 500_000, publishedAt: daysAgo(10 + i * 2) })),
   channelAgeMonths: 6,
 });
-check('thin back catalogue still scores on velocity', noPrior.score > 40, true);
+check('genuinely new channel scores on velocity', newAndHot.score > 40, true);
+
+// A news firehose also has no back catalogue inside the sample — but only because
+// it uploads 30x a day, so nothing in its last 50 videos is mature. Scoring that on
+// raw velocity floated ABC News to the top of the Finance niche at 84/100.
+const firehose = computeMomentum({
+  uploads: Array.from({ length: 50 }, (_, i) => ({ views: 400_000, publishedAt: daysAgo(i * 0.05) })),
+  channelAgeMonths: 220,
+});
+console.log(`  newAndHot score=${newAndHot.score} (uploads=4)   firehose score=${firehose.score} (uploads=50)\n`);
+check('firehose has no measurable lift', firehose.lift, 0);
+check('firehose is treated as unproven, not surging', firehose.score < 35, true);
+check('firehose never outranks a genuinely rising channel', rising.score > firehose.score, true);
+check('firehose never flagged breakout', firehose.isBreakout, false);
 
 // The mean-vs-median trap this replaced: one viral video in the back catalogue
 // must not make a healthy channel look dead.
@@ -116,6 +133,24 @@ check('identical raw lift on both', [dormant.lift, doubling.lift], [2, 2]);
 check('dormant channel stays in the Steady tier', momentumTier(dormant.score).label, 'Steady');
 check('doubling channel scores high on the same lift', doubling.score > 70, true);
 check('scale separates them by an order of magnitude', doubling.score > dormant.score * 10, true);
+
+// --- audience overlap ---
+// Overlap coefficient, not Jaccard: a small channel whose audience sits entirely
+// inside a large one's is the relationship we most want to surface, and Jaccard
+// would report it as near-zero.
+const small = new Set(['a', 'b', 'c']);
+const large = new Set(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']);
+check('subset scores 1.0 (Jaccard would say 0.3)', overlapCoefficient(small, large), 1);
+check('overlap is symmetric', overlapCoefficient(large, small), overlapCoefficient(small, large));
+check('disjoint sets score 0', overlapCoefficient(new Set(['a']), new Set(['b'])), 0);
+check('empty set scores 0', overlapCoefficient(new Set(), large), 0);
+check('half overlap', overlapCoefficient(new Set(['a', 'b']), new Set(['a', 'x', 'y'])), 0.5);
+
+// The live measurement this threshold came from: related finance creators sit at
+// 1.4-2.4% overlap, unrelated controls at 0.0-0.2%.
+const MIN_MEANINGFUL_OVERLAP = 0.005;
+check('related-pair overlap clears the threshold', 0.014 > MIN_MEANINGFUL_OVERLAP, true);
+check('control-pair overlap does not', 0.0021 > MIN_MEANINGFUL_OVERLAP, false);
 
 // --- format breakdown ---
 const formats = buildFormatBreakdown([

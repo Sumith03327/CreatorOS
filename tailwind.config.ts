@@ -15,6 +15,12 @@ export default {
         headline: ['Inter', 'sans-serif'],
         code: ['monospace'],
       },
+      fontSize: {
+        // Smallest step in the scale (11px). The floor for metadata — nothing
+        // should render below this. Tracking is left to `.label-caps`, since
+        // this size serves both uppercase labels and small body text.
+        micro: ['0.6875rem', { lineHeight: '0.875rem' }],
+      },
       colors: {
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',

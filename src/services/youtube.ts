@@ -8,8 +8,10 @@
  */
 
 import { YoutubeTranscript } from 'youtube-transcript';
-import { computeMomentum, computeOutlierScore, computeVph, median, toNum } from '@/lib/research-metrics';
+import { computeMomentum, computeOutlierScore, computeVph, median, overlapCoefficient, toNum } from '@/lib/research-metrics';
 import { isShort } from '@/lib/video-utils';
+import { findIrrelevant } from '@/ai/flows/niche-relevance-flow';
+import { getCompetitorQueries, getNicheSeedQueries } from '@/ai/flows/seed-queries-flow';
 
 const API_KEY = process.env.YOUTUBE_API_KEY || process.env.VITE_YOUTUBE_API_KEY || process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
 const BASE_URL = 'https://www.googleapis.com/youtube/v3';
@@ -131,10 +133,46 @@ async function fetchChannelsByIds(ids: string[], parts = 'snippet,statistics,con
   return batches.flat();
 }
 
+// --- Channel discovery ------------------------------------------------------
+
+/** Resolves an @handle to a channel ID for 1 quota unit. Returns null if unknown. */
+async function resolveHandle(handle: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/channels?part=id&forHandle=${encodeURIComponent(handle)}&key=${API_KEY}`);
+    const data = await handleYoutubeResponse(res);
+    return data.items?.[0]?.id ?? null;
+  } catch (e) {
+    console.warn(`forHandle failed for @${handle}:`, e);
+    return null;
+  }
+}
+
+const CHANNEL_ID_RE = /(?:youtube\.com\/channel\/)(UC[a-zA-Z0-9_-]{22})/g;
+const HANDLE_RE = /(?:youtube\.com\/@|(?:^|\s|ft\.?\s*|feat\.?\s*|with\s+))@([a-zA-Z0-9._-]{3,30})/gi;
+
+/**
+ * Creators cite each other. Their video descriptions link collaborators, their
+ * own second channels, and the people they learned from — which is a citation
+ * graph we can walk for free, because `snippet.description` already arrives with
+ * every video we fetch. No extra quota is spent to read it.
+ */
+function extractChannelMentions(descriptions: string[]): { ids: string[]; handles: string[] } {
+  const ids = new Set<string>();
+  const handles = new Set<string>();
+
+  for (const text of descriptions) {
+    if (!text) continue;
+    for (const match of text.matchAll(CHANNEL_ID_RE)) ids.add(match[1]);
+    for (const match of text.matchAll(HANDLE_RE)) handles.add(match[1].replace(/[.\-_]+$/, ''));
+  }
+  return { ids: Array.from(ids), handles: Array.from(handles) };
+}
+
 // --- Channel baselines ------------------------------------------------------
 
 interface BaselineVideo {
   id: string;
+  title: string;
   views: number;
   publishedAt: string;
   short: boolean;
@@ -171,27 +209,54 @@ const MIN_CREDIBLE_BASELINE = 500;
 
 const baselineCache = new Map<string, { value: ChannelBaseline; expiresAt: number }>();
 
+/**
+ * Momentum needs uploads older than the 7-day maturity window. A channel posting
+ * several videos a day has none in its most recent 50, so we pull one more page
+ * (2 more quota units) when the first page doesn't reach back far enough. True
+ * firehoses — 30 uploads a day — stay unreachable and are scored as unproven.
+ */
+const BASELINE_MIN_SPAN_DAYS = 14;
+const BASELINE_MAX_PAGES = 2;
+
 async function fetchChannelBaseline(channelId: string, uploadsPlaylistId: string): Promise<ChannelBaseline | null> {
   const cached = baselineCache.get(channelId);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   try {
-    const listRes = await fetch(
-      `${BASE_URL}/playlistItems?part=contentDetails&playlistId=${uploadsPlaylistId}&maxResults=${BASELINE_SAMPLE_SIZE}&key=${API_KEY}`
-    );
-    const listData = await handleYoutubeResponse(listRes);
-    const ids: string[] = (listData.items || []).map((i: any) => i.contentDetails?.videoId).filter(Boolean);
-    if (ids.length === 0) return null;
+    const videos: BaselineVideo[] = [];
+    let pageToken: string | undefined;
 
-    const items = await fetchVideosByIds(ids);
-    const videos: BaselineVideo[] = items
-      .filter((v: any) => !isLiveBroadcast(v))
-      .map((v: any) => ({
-        id: v.id,
-        views: toNum(v.statistics?.viewCount),
-        publishedAt: v.snippet?.publishedAt,
-        short: isShort(v.contentDetails?.duration),
-      }));
+    for (let page = 0; page < BASELINE_MAX_PAGES; page++) {
+      const params = new URLSearchParams({
+        part: 'contentDetails', playlistId: uploadsPlaylistId,
+        maxResults: String(BASELINE_SAMPLE_SIZE), key: API_KEY!,
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+
+      const listRes = await fetch(`${BASE_URL}/playlistItems?${params.toString()}`);
+      const listData = await handleYoutubeResponse(listRes);
+      pageToken = listData.nextPageToken;
+
+      const ids: string[] = (listData.items || []).map((i: any) => i.contentDetails?.videoId).filter(Boolean);
+      if (ids.length === 0) break;
+
+      const items = await fetchVideosByIds(ids);
+      for (const v of items) {
+        if (isLiveBroadcast(v)) continue;
+        videos.push({
+          id: v.id,
+          title: v.snippet?.title ?? '',
+          views: toNum(v.statistics?.viewCount),
+          publishedAt: v.snippet?.publishedAt,
+          short: isShort(v.contentDetails?.duration),
+        });
+      }
+
+      const oldest = Math.min(...videos.map(v => new Date(v.publishedAt).getTime()).filter(Number.isFinite));
+      const spanDays = (Date.now() - oldest) / (1000 * 60 * 60 * 24);
+      if (!pageToken || spanDays >= BASELINE_MIN_SPAN_DAYS) break;
+    }
+
     if (videos.length === 0) return null;
 
     const baseline: ChannelBaseline = {
@@ -244,11 +309,17 @@ export async function fetchYouTubeChannelData(url: string): Promise<YouTubeChann
   //    text-search that could resolve to the wrong channel (e.g. history re-clicks).
   if (!channelId && /^UC[a-zA-Z0-9_-]{22}$/.test(input)) channelId = input;
 
+  // 3. A handle (@name), either bare or inside a /@name URL. channels.list?forHandle
+  //    resolves this for 1 quota unit; the text search below costs 100 for the same
+  //    answer, and can silently resolve to the wrong channel.
   if (!channelId) {
-    // 3. Handle (@name), vanity URL, or free text → resolve via search.
     const handleMatch = input.match(/@([a-zA-Z0-9._-]+)/);
-    const query = handleMatch ? `@${handleMatch[1]}` : input;
-    const searchUrl = `${BASE_URL}/search?part=snippet&q=${encodeURIComponent(query)}&type=channel&maxResults=1&key=${API_KEY}`;
+    if (handleMatch) channelId = await resolveHandle(handleMatch[1]);
+  }
+
+  if (!channelId) {
+    // 4. Free text, or a legacy /c/ vanity URL → fall back to the 100-unit search.
+    const searchUrl = `${BASE_URL}/search?part=snippet&q=${encodeURIComponent(input)}&type=channel&maxResults=1&key=${API_KEY}`;
     const searchRes = await fetch(searchUrl);
     const searchData = await handleYoutubeResponse(searchRes);
     if (!searchData.items || searchData.items.length === 0) return null;
@@ -293,10 +364,15 @@ export interface BoomingChannel {
   isBreakout: boolean;
   /** False when we couldn't sample uploads and fell back to lifetime figures. */
   hasRecentData: boolean;
+  /** Which format is carrying the channel, from the medians of its recent uploads. */
+  formatFocus: 'shorts' | 'long' | 'mixed';
+  /** How many of the niche's current top videos this channel produced. */
+  poolVideoCount: number;
 }
 
-// How many search hits we deep-sample for momentum. Each costs ~2 quota units.
-const MOMENTUM_SAMPLE_LIMIT = 30;
+// How many candidates we deep-sample for momentum. Each costs ~2 quota units, so
+// this is the main lever on the Channels tab's cost and its recall.
+const MOMENTUM_SAMPLE_LIMIT = 60;
 // Of those, how many slots are reserved for the youngest channels. Ranking the
 // candidate pool purely by subscribers would truncate away the young channels in
 // a crowded niche — the exact ones the breakout radar exists to surface.
@@ -307,63 +383,208 @@ function channelAgeMonthsOf(channel: any): number {
   return Math.max(1, Math.round((Date.now() - publishedAt) / (1000 * 60 * 60 * 24 * 30)));
 }
 
+// Seed queries describe a niche's long-tail, which changes slowly. One cheap LLM
+// call per niche per day.
+const SEED_QUERY_TTL_MS = 24 * 60 * 60 * 1000;
+const seedQueryCache = new Map<string, { value: string[]; expiresAt: number }>();
+
+async function getSeedQueries(niche: string, count: number): Promise<string[]> {
+  const cached = seedQueryCache.get(niche);
+  if (cached && cached.expiresAt > Date.now()) return cached.value.slice(0, count);
+  try {
+    const { queries } = await getNicheSeedQueries({ niche });
+    seedQueryCache.set(niche, { value: queries, expiresAt: Date.now() + SEED_QUERY_TTL_MS });
+    return queries.slice(0, count);
+  } catch (e) {
+    // Widening is an optimisation, not a requirement.
+    console.warn('Seed query generation failed; searching the head term only:', e);
+    return [];
+  }
+}
+
+// Each extra seed query is another 100-unit search. Two is a reasonable ceiling.
+// Both research tabs use the same count so their pools share a cache key.
+const SEED_QUERIES_PER_POOL = 2;
+// Ceiling for the widened pass, used only when a narrow filter starves the pool.
+const SEED_QUERIES_WIDENED = 4;
+const MIN_CANDIDATES_BEFORE_WIDENING = 20;
+// Empty shells and one-subscriber spam aren't worth 2 units of baseline sampling.
+const MIN_CHANNEL_SUBSCRIBERS = 1000;
+const MIN_CHANNEL_VIDEOS = 3;
+
+export interface BoomingChannelOptions {
+  /**
+   * Subscriber band and age cap are applied to the candidate pool *before* we
+   * spend two quota units per channel sampling its uploads. Filtering the ranked
+   * output instead would pay for sixty channels and then show four of them.
+   */
+  subscriberMin?: number;
+  subscriberMax?: number;
+  maxAgeMonths?: number;
+  region?: 'IN' | 'global';
+  language?: string;
+}
+
+/**
+ * Which format the channel is actually winning with. A channel whose Shorts
+ * median is several times its long-form median is running a different playbook,
+ * and a creator studying it should know that before copying anything.
+ */
+function resolveFormatFocus(baseline: ChannelBaseline | null): 'shorts' | 'long' | 'mixed' {
+  if (!baseline) return 'mixed';
+  const { shorts, longForm } = baseline;
+  if (shorts > 0 && longForm === 0) return 'shorts';
+  if (longForm > 0 && shorts === 0) return 'long';
+  if (shorts === 0 && longForm === 0) return 'mixed';
+  const ratio = shorts / longForm;
+  if (ratio >= 2) return 'shorts';
+  if (ratio <= 0.5) return 'long';
+  return 'mixed';
+}
+
 /**
  * Finds channels in a niche and ranks them by *current* momentum.
  *
- * YouTube's channel search doesn't support publishedAfter or order=viewCount for
- * type=channel, so query variety is the only lever for building a candidate pool.
- * The ranking then comes from each channel's recent uploads: how fast those
- * videos are accumulating views, and whether they beat the channel's own all-time
- * average. A channel that was huge three years ago and is dead now scores low.
+ * Channels are discovered through their videos rather than through
+ * `search?type=channel`. Both cost 100 quota units, but a channel search returns
+ * at most a handful of channels matched on their self-description, while a video
+ * search returns 50 videos each carrying a channelId — channels found by what
+ * they are *doing*, not by what their bio claims. The pool is shared with the
+ * Content tab, so a user visiting both pays for the searches once.
+ *
+ * Ranking then comes from each channel's recent uploads: how fast the newest are
+ * gaining views, and whether they beat the channel's own older ones. A channel
+ * that was huge three years ago and is quiet now scores low.
  */
-export async function fetchBoomingChannels(niche: string): Promise<BoomingChannel[]> {
+export async function fetchBoomingChannels(niche: string, options: BoomingChannelOptions = {}): Promise<BoomingChannel[]> {
   if (!API_KEY) throw new Error('YouTube API Key missing');
 
-  const queries = [`${niche} tips`, `${niche} tutorial`, `${niche} channel`, `${niche} explained`];
+  const {
+    subscriberMin = MIN_CHANNEL_SUBSCRIBERS,
+    subscriberMax = Infinity,
+    maxAgeMonths = Infinity,
+    region = 'global',
+    language = 'all',
+  } = options;
 
-  const searchResults = await Promise.all(
-    queries.map(q =>
-      fetch(`${BASE_URL}/search?part=snippet&type=channel&q=${encodeURIComponent(q)}&maxResults=8&key=${API_KEY}`)
-        .then(r => handleYoutubeResponse(r))
-    )
+  const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const seeds = await getSeedQueries(niche, SEED_QUERIES_WIDENED);
+
+  const poolFor = (extraQueries: { q: string; order: string }[]) =>
+    gatherNichePool({ niche, publishedAfter, language, contentType: 'all', region, depth: 'deep', extraQueries });
+
+  const passesFilters = (c: any) => {
+    const subs = toNum(c.statistics?.subscriberCount);
+    return (
+      toNum(c.statistics?.videoCount) >= MIN_CHANNEL_VIDEOS &&
+      subs >= Math.max(subscriberMin, MIN_CHANNEL_SUBSCRIBERS) &&
+      subs < subscriberMax &&
+      channelAgeMonthsOf(c) <= maxAgeMonths
+    );
+  };
+
+  let { videos, channelById } = await poolFor(seeds.slice(0, SEED_QUERIES_PER_POOL).map(q => ({ q, order: 'viewCount' })));
+  let candidates = Array.from(channelById.values()).filter(passesFilters);
+
+  /**
+   * A narrow filter — "micro channels under two years old" — can leave a single
+   * survivor in a hundred-channel pool. That's a recall failure, not an honest
+   * empty result, so we widen: more long-tail queries, and `order=date` searches,
+   * which return recent uploads regardless of channel size and are therefore where
+   * the small channels are. Paid only when the filter actually starves the pool.
+   */
+  if (candidates.length < MIN_CANDIDATES_BEFORE_WIDENING && seeds.length > SEED_QUERIES_PER_POOL) {
+    const widened = [
+      ...seeds.slice(0, 4).map(q => ({ q, order: 'viewCount' })),
+      ...seeds.slice(0, 2).map(q => ({ q, order: 'date' })),
+    ];
+    ({ videos, channelById } = await poolFor(widened));
+    candidates = Array.from(channelById.values()).filter(passesFilters);
+  }
+
+  if (channelById.size === 0) return [];
+
+  // What each channel actually published into this niche. The count is a prior on
+  // whether it belongs here; the titles are the evidence the classifier judges on,
+  // and they are far more telling than a channel's own bio.
+  const poolVideoCounts = new Map<string, number>();
+  const poolTitles = new Map<string, string[]>();
+  for (const video of videos) {
+    const id = video.snippet?.channelId;
+    if (!id) continue;
+    poolVideoCounts.set(id, (poolVideoCounts.get(id) ?? 0) + 1);
+    const titles = poolTitles.get(id) ?? [];
+    if (titles.length < 3) titles.push(video.snippet.title);
+    poolTitles.set(id, titles);
+  }
+
+  if (candidates.length === 0) return [];
+
+  // Pass 1 (coarse): drop what clearly isn't this niche before spending 2 quota
+  // units per channel on baselines. All we know here is the channel's bio and the
+  // one or two videos it put into the pool, so this pass only catches the obvious.
+  const irrelevant = new Set(
+    await findIrrelevant({
+      niche,
+      kind: 'channel',
+      candidates: candidates.map((c: any) => ({
+        id: c.id,
+        title: c.snippet.title,
+        description: c.snippet.description,
+        sampleTitles: poolTitles.get(c.id),
+      })),
+    })
   );
-  const allChannelIds = searchResults.flatMap(res => res.items?.map((i: any) => i.id.channelId) || []).filter(Boolean);
-  const uniqueIds = Array.from(new Set(allChannelIds)).slice(0, MAX_IDS_PER_BATCH);
-  if (uniqueIds.length === 0) return [];
+  const relevant = candidates.filter((c: any) => !irrelevant.has(c.id));
+  if (relevant.length === 0) return [];
 
-  const items = await fetchChannelsByIds(uniqueIds);
-  if (items.length === 0) return [];
-
-  // Deep-sampling costs quota, so we can only afford MOMENTUM_SAMPLE_LIMIT of the
-  // candidates. Drop empty shells and one-subscriber spam first, then fill most
-  // slots by reach and reserve the rest for the youngest channels.
-  const candidates = items.filter(
-    (c: any) => toNum(c.statistics?.videoCount) >= 3 && toNum(c.statistics?.subscriberCount) >= 1000
-  );
-
-  const bySubscribers = [...candidates].sort(
+  // Deep-sampling costs quota, so we can only afford MOMENTUM_SAMPLE_LIMIT of
+  // them. Fill most slots by reach and reserve the rest for the youngest
+  // channels — ranking purely by subscribers would truncate away exactly the
+  // channels the breakout radar exists to surface.
+  const bySubscribers = [...relevant].sort(
     (a: any, b: any) => toNum(b.statistics?.subscriberCount) - toNum(a.statistics?.subscriberCount)
   );
   const selected = new Map<string, any>(
     bySubscribers.slice(0, MOMENTUM_SAMPLE_LIMIT - YOUNG_CHANNEL_RESERVE).map((c: any) => [c.id, c])
   );
 
-  const byAge = [...candidates].sort((a: any, b: any) => channelAgeMonthsOf(a) - channelAgeMonthsOf(b));
+  const byAge = [...relevant].sort((a: any, b: any) => channelAgeMonthsOf(a) - channelAgeMonthsOf(b));
   for (const channel of byAge) {
     if (selected.size >= MOMENTUM_SAMPLE_LIMIT) break;
     selected.set(channel.id, channel);
   }
   const ranked = Array.from(selected.values());
 
-  const baselines = await mapWithConcurrency(ranked, 6, async (c: any) => {
+  const baselines = await mapWithConcurrency(ranked, 8, async (c: any) => {
     const uploads = c.contentDetails?.relatedPlaylists?.uploads;
     return uploads ? await fetchChannelBaseline(c.id, uploads) : null;
   });
 
-  return ranked.map((c: any, index: number): BoomingChannel => {
+  // Pass 2 (fine): the baselines just handed us each channel's last 50 upload
+  // titles at no extra quota cost. That is a far better description of what a
+  // channel is actually about than its own bio, and it's how brand accounts,
+  // meme channels and general-news outlets get caught.
+  const stillIrrelevant = new Set(
+    await findIrrelevant({
+      niche,
+      kind: 'channel',
+      candidates: ranked.map((c: any, index: number) => ({
+        id: c.id,
+        title: c.snippet.title,
+        description: c.snippet.description,
+        sampleTitles: baselines[index]?.videos.slice(0, 6).map(v => v.title).filter(Boolean),
+      })),
+    })
+  );
+
+  const survivors = ranked
+    .map((channel: any, index: number) => ({ channel, baseline: baselines[index] }))
+    .filter(({ channel }) => !stillIrrelevant.has(channel.id));
+
+  return survivors.map(({ channel: c, baseline }): BoomingChannel => {
     const videoCount = toNum(c.statistics?.videoCount);
     const channelAgeMonths = channelAgeMonthsOf(c);
-    const baseline = baselines[index];
 
     const momentum = computeMomentum({
       uploads: baseline?.videos.map(v => ({ views: v.views, publishedAt: v.publishedAt })) ?? [],
@@ -386,6 +607,8 @@ export async function fetchBoomingChannels(niche: string): Promise<BoomingChanne
       recentMedianViews: momentum.recentMedianViews,
       isBreakout: momentum.isBreakout,
       hasRecentData: momentum.sampleSize >= 3,
+      formatFocus: resolveFormatFocus(baseline),
+      poolVideoCount: poolVideoCounts.get(c.id) ?? 0,
     };
   });
 }
@@ -577,32 +800,66 @@ export interface OutlierSearchOptions {
 const MIN_VIEWS_FOR_OUTLIER = 1000;
 // How many top candidates get an accurate recent-uploads baseline (~2 units/channel).
 const DEEP_BASELINE_CHANNEL_LIMIT = 35;
+// Handle lookups cost 1 unit each; cap how many mined mentions we chase per pool.
+const MAX_MENTION_HANDLES = 12;
+// A pool is expensive (hundreds of units). Both research tabs draw from the same
+// one, and a user flipping between them within half an hour pays for it once.
+const POOL_TTL_MS = 30 * 60 * 1000;
+
+interface NichePool {
+  /** Non-live videos clearing the view floor, enriched with stats and duration. */
+  videos: any[];
+  /** Every channel behind those videos, plus channels mined from descriptions. */
+  channelById: Map<string, any>;
+}
+
+const poolCache = new Map<string, { value: NichePool; expiresAt: number }>();
+
+interface PoolOptions {
+  niche: string;
+  publishedAfter: string;
+  language: string;
+  contentType: 'all' | 'long' | 'short';
+  region: 'IN' | 'global';
+  depth: 'quick' | 'deep';
+  /** Extra long-tail searches to widen discovery. Each costs 100 units. */
+  extraQueries?: { q: string; order: string }[];
+}
 
 /**
- * The research page's video search.
+ * Builds the candidate pool a niche's research is computed from.
  *
- * A single `order=viewCount` search returns big-channel videos, so any
- * small-channel breakout is filtered out *before* outlier math can find it. We
- * pool three complementary searches instead — top performers, newest uploads
- * (where breakouts hide), and relevance — then rank the union ourselves.
+ * `search?type=video` and `search?type=channel` both cost 100 quota units, but a
+ * video search returns 50 results each carrying a `channelId`, while a channel
+ * search returns channels matched on their *name and description keywords* —
+ * i.e. how a channel describes itself, not what it is currently doing. So we
+ * discover channels through their videos, at up to 50 channels per 100 units
+ * instead of 8, and get the videos themselves for free.
  *
- * Costs ~300 quota units for the searches plus ~1 unit per channel sampled.
- * Results are sorted by outlier score; callers re-sort client-side for free.
+ * Enrichment is nearly free by comparison: `videos.list` and `channels.list`
+ * take 50 ids per request for 1 unit.
  */
-export async function searchOutlierVideos(options: OutlierSearchOptions): Promise<ResearchVideo[]> {
-  if (!API_KEY) throw new Error('YouTube API Key is missing');
-  const { niche, publishedAfter, language, contentType, region, limit = 36, depth = 'deep' } = options;
+async function gatherNichePool(options: PoolOptions): Promise<NichePool> {
+  const { niche, publishedAfter, language, contentType, region, depth, extraQueries = [] } = options;
+
+  const cacheKey = JSON.stringify(options);
+  const cached = poolCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const videoDuration = contentType === 'short' ? 'short' : contentType === 'long' ? 'long' : 'any';
   const searches: { q: string; order: string }[] =
     depth === 'quick'
       ? [{ q: niche, order: 'viewCount' }]
       : [
+          // Top performers, newest uploads (where small-channel breakouts hide),
+          // and relevance — three complementary views of the same niche.
           { q: niche, order: 'viewCount' },
           { q: niche, order: 'date' },
           { q: niche, order: 'relevance' },
+          ...extraQueries,
         ];
 
+  const failures: Error[] = [];
   const searchResults = await Promise.all(
     searches.map(async ({ q, order }) => {
       const params = new URLSearchParams({
@@ -618,28 +875,82 @@ export async function searchOutlierVideos(options: OutlierSearchOptions): Promis
       } catch (e) {
         // One failed search shouldn't sink the whole pool.
         console.warn(`search failed (${q}, ${order}):`, e);
+        failures.push(e as Error);
         return [] as string[];
       }
     })
   );
 
+  // If every search failed we have no pool at all. Swallowing that would render
+  // an exhausted quota as "this niche has no channels", which is a lie — and it
+  // denies the caller the chance to fall back to its cache.
+  if (failures.length === searches.length) throw failures[0];
+
   const videoIds = Array.from(new Set(searchResults.flat()));
-  if (videoIds.length === 0) return [];
+  if (videoIds.length === 0) return { videos: [], channelById: new Map() };
 
   const items = await fetchVideosByIds(videoIds);
-  const eligible = items.filter(
+  const videos = items.filter(
     (v: any) => !isLiveBroadcast(v) && toNum(v.statistics?.viewCount) >= MIN_VIEWS_FOR_OUTLIER
   );
-  if (eligible.length === 0) return [];
 
-  const channelIds = Array.from(new Set(eligible.map((v: any) => v.snippet?.channelId).filter(Boolean))) as string[];
+  // Walk the citation graph in the descriptions we already paid for.
+  const mentions = extractChannelMentions(videos.map((v: any) => v.snippet?.description ?? ''));
+  const resolvedHandles = await mapWithConcurrency(
+    mentions.handles.slice(0, MAX_MENTION_HANDLES),
+    6,
+    resolveHandle
+  );
+
+  const channelIds = Array.from(
+    new Set([
+      ...videos.map((v: any) => v.snippet?.channelId),
+      ...mentions.ids,
+      ...resolvedHandles,
+    ].filter(Boolean))
+  ) as string[];
+
   const channels = await fetchChannelsByIds(channelIds);
-  const channelById = new Map<string, any>(channels.map((c: any) => [c.id, c]));
+  const pool: NichePool = { videos, channelById: new Map(channels.map((c: any) => [c.id, c])) };
+
+  // A pool built from a partially-failed set of searches is thinner than it should
+  // be. Don't pin that degraded result in the cache for the next half hour.
+  if (failures.length === 0) poolCache.set(cacheKey, { value: pool, expiresAt: Date.now() + POOL_TTL_MS });
+  return pool;
+}
+
+/**
+ * The research page's video search.
+ *
+ * A single `order=viewCount` search returns big-channel videos, so any
+ * small-channel breakout is filtered out *before* outlier math can find it. The
+ * pool draws on complementary searches instead, then ranks the union here.
+ *
+ * Off-topic hits are dropped before we spend baseline quota on them: a keyword
+ * search for "Finance" returns political clips and hashtag spam, and sampling a
+ * channel's uploads costs 2 units we'd rather not waste.
+ *
+ * Results are sorted by outlier score; callers re-sort client-side for free.
+ */
+export async function searchOutlierVideos(options: OutlierSearchOptions): Promise<ResearchVideo[]> {
+  if (!API_KEY) throw new Error('YouTube API Key is missing');
+  const { niche, publishedAfter, language, contentType, region, limit = 36, depth = 'deep' } = options;
+
+  // The head term surfaces the channels that already rank for it. The long tail is
+  // where small channels win, so it's where the interesting outliers are. Agent
+  // tools stay on 'quick' and skip this — they shouldn't spend 200 extra units.
+  const seeds = depth === 'deep' ? await getSeedQueries(niche, SEED_QUERIES_PER_POOL) : [];
+  const extraQueries = seeds.map(q => ({ q, order: 'viewCount' }));
+
+  const { videos: eligible, channelById } = await gatherNichePool({
+    niche, publishedAfter, language, contentType, region, depth, extraQueries,
+  });
+  if (eligible.length === 0) return [];
 
   const { subscriberMin = 0, subscriberMax = Infinity } = options;
 
   // Pass 1: rank on the free lifetime average (channel views ÷ video count) to
-  // decide which channels are worth paying for an accurate baseline.
+  // decide which candidates are worth paying for an accurate baseline.
   const scored = eligible
     .filter((v: any) => {
       const subs = toNum(channelById.get(v.snippet.channelId)?.statistics?.subscriberCount);
@@ -654,8 +965,24 @@ export async function searchOutlierVideos(options: OutlierSearchOptions): Promis
     });
   scored.sort((a, b) => b.prelim - a.prelim);
 
-  // Pass 2: real baselines for the channels behind the strongest candidates.
-  const shortlist = scored.slice(0, Math.min(scored.length, limit * 2));
+  // Pass 2: drop what clearly isn't about this niche, then take the shortlist.
+  // We classify three times the requested count so the filter has room to cut.
+  const preFilter = scored.slice(0, Math.min(scored.length, limit * 3));
+  const irrelevant = new Set(
+    await findIrrelevant({
+      niche,
+      kind: 'video',
+      candidates: preFilter.map(s => ({
+        id: s.item.id,
+        title: s.item.snippet.title,
+        context: s.item.snippet.channelTitle,
+        description: s.item.snippet.description,
+      })),
+    })
+  );
+  const shortlist = preFilter.filter(s => !irrelevant.has(s.item.id)).slice(0, limit * 2);
+
+  // Pass 3: real baselines for the channels behind the surviving candidates.
   const deepChannels = Array.from(new Set(shortlist.map(s => s.channel?.id).filter(Boolean)))
     .slice(0, DEEP_BASELINE_CHANNEL_LIMIT) as string[];
 
@@ -696,6 +1023,351 @@ export async function searchOutlierVideos(options: OutlierSearchOptions): Promis
   }
 
   return results.sort((a, b) => b.outlierScore - a.outlierScore).slice(0, limit);
+}
+
+// --- Similar channels -------------------------------------------------------
+
+export interface SimilarChannel {
+  id: string;
+  title: string;
+  handle: string;
+  avatarUrl: string;
+  subscriberCount: string;
+  /** How many of the source channel's search queries this channel also ranked for. */
+  coRankCount: number;
+  /** The source channel linked to this one from a video description. */
+  cited: boolean;
+  /** The source channel lists this one under Featured Channels. */
+  featured: boolean;
+  /**
+   * Share of this channel's sampled commenters who also comment on the source.
+   * The closest legitimate proxy for "viewers also watch" — YouTube exposes no
+   * audience data, but it does expose who leaves comments.
+   */
+  audienceOverlap: number;
+  /** How many commenters we could sample. Small samples make overlap unreliable. */
+  overlapSampleSize: number;
+  /** Raw count of commenters seen on both channels. Unrelated channels share zero. */
+  sharedCommenters: number;
+  /** This channel's subscribers ÷ the source's. 1 = same size, 10 = ten times bigger. */
+  sizeRatio: number;
+  /** Within an order of magnitude of the source — a channel you could actually model. */
+  isPeer: boolean;
+  /** The strongest signal behind this match, for grouping in the UI. */
+  matchKind: 'audience' | 'featured' | 'linked' | 'topic';
+  /** 0–100, blending every signal above. */
+  score: number;
+  reasons: string[];
+}
+
+/** A search page returns at most 50 results; rank weights are relative to that. */
+const SEARCH_PAGE_SIZE = 50;
+/**
+ * Beyond this size gap the channel stops being a peer. National Geographic and a
+ * 19K-subscriber science channel can rank for the same query without one being
+ * remotely useful as a model for the other, so vast channels are damped rather
+ * than dropped — they're still context, just not the answer.
+ */
+const PEER_SIZE_RATIO = 10;
+const SIZE_MISMATCH_FLOOR = 0.35;
+
+/**
+ * Damps a channel's score by how far its size is from the source's. Symmetric in
+ * log space: ten times bigger and ten times smaller are equally unlike you.
+ */
+function sizeProximity(sizeRatio: number): number {
+  if (!Number.isFinite(sizeRatio) || sizeRatio <= 0) return SIZE_MISMATCH_FLOOR;
+  const decades = Math.abs(Math.log10(sizeRatio));
+  return Math.max(SIZE_MISMATCH_FLOOR, 1 - decades / 3);
+}
+
+/**
+ * Comment pages cost 1 unit each and cap at 100 top-level threads.
+ *
+ * Sampling is deliberately asymmetric. The overlap coefficient works out to
+ * roughly `ρ × nSource / N`, so it scales with the *larger* sample — which means
+ * sampling the source channel deeply lifts every candidate's measured overlap
+ * out of the noise, and we pay for that depth exactly once. Candidates stay
+ * shallow at ~8 units each. Measured on real channels, a shallow-source sample
+ * put related pairs at ~1% overlap on 4-9 shared commenters: the right ordering,
+ * but too fragile to show anyone.
+ */
+const COMMENT_PAGES_SOURCE = 5;
+const COMMENT_VIDEOS_SOURCE = 8;
+const COMMENT_PAGES_CANDIDATE = 2;
+const COMMENT_VIDEOS_CANDIDATE = 4;
+// Overlap below this sample size is noise, not measurement.
+const MIN_OVERLAP_SAMPLE = 40;
+// Fewer shared commenters than this can't distinguish a real audience from chance.
+const MIN_SHARED_COMMENTERS = 3;
+/**
+ * Measured on channels whose relationship we know: genuinely related creators
+ * (Graham Stephan / Andrei Jikh / Meet Kevin) land at 1.4–2.4% overlap, while
+ * unrelated controls (a finance channel against a cooking channel) land at
+ * 0.0–0.2%. A raw shared-commenter count doesn't separate them — a big enough
+ * sample finds a few coincidental commenters anywhere — but the coefficient does.
+ */
+const MIN_MEANINGFUL_OVERLAP = 0.005;
+const MAX_SIMILAR_CANDIDATES = 20;
+const SIMILAR_TTL_MS = 12 * 60 * 60 * 1000;
+
+const similarCache = new Map<string, { value: SimilarChannel[]; expiresAt: number }>();
+
+/** Featured channels the creator curated by hand. 1 quota unit, perfect precision. */
+async function fetchFeaturedChannels(channelId: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/channelSections?part=contentDetails&channelId=${channelId}&key=${API_KEY}`);
+    const data = await handleYoutubeResponse(res);
+    const ids: string[] = [];
+    for (const section of data.items || []) {
+      for (const id of section.contentDetails?.channels || []) ids.push(id);
+    }
+    return Array.from(new Set(ids));
+  } catch (e) {
+    console.warn('channelSections failed:', e);
+    return [];
+  }
+}
+
+/**
+ * The channel IDs of people who left top-level comments. `commentThreads` costs
+ * 1 unit per page of 100, and comments are frequently disabled, so this returns
+ * whatever it can rather than failing.
+ */
+async function fetchCommenters(videoIds: string[], pages: number): Promise<Set<string>> {
+  const commenters = new Set<string>();
+
+  await mapWithConcurrency(videoIds, 4, async (videoId) => {
+    let pageToken: string | undefined;
+    for (let page = 0; page < pages; page++) {
+      try {
+        const params = new URLSearchParams({
+          part: 'snippet', videoId, maxResults: '100', order: 'relevance', key: API_KEY!,
+        });
+        if (pageToken) params.set('pageToken', pageToken);
+        const res = await fetch(`${BASE_URL}/commentThreads?${params.toString()}`);
+        const data = await handleYoutubeResponse(res);
+        for (const thread of data.items || []) {
+          const author = thread.snippet?.topLevelComment?.snippet?.authorChannelId?.value;
+          if (author) commenters.add(author);
+        }
+        pageToken = data.nextPageToken;
+        if (!pageToken) break;
+      } catch {
+        // Comments disabled, or the video is age-restricted. Move on.
+        break;
+      }
+    }
+  });
+
+  return commenters;
+}
+
+/** Top-viewed videos from a channel's baseline sample, newest-heavy by construction. */
+async function topVideoIds(channelId: string, uploadsPlaylistId: string, count: number): Promise<string[]> {
+  const baseline = await fetchChannelBaseline(channelId, uploadsPlaylistId);
+  if (!baseline) return [];
+  return [...baseline.videos].sort((a, b) => b.views - a.views).slice(0, count).map(v => v.id);
+}
+
+/**
+ * The engaged-commenter sample for one channel: the people who left top-level
+ * comments on its best-performing recent videos. Exported so the overlap signal
+ * can be measured against real channels rather than assumed to work.
+ */
+export async function sampleChannelCommenters(
+  channelId: string,
+  videoCount = COMMENT_VIDEOS_SOURCE,
+  pages = COMMENT_PAGES_SOURCE
+): Promise<string[]> {
+  const [channel] = await fetchChannelsByIds([channelId]);
+  const uploads = channel?.contentDetails?.relatedPlaylists?.uploads;
+  if (!uploads) return [];
+  const videoIds = await topVideoIds(channelId, uploads, videoCount);
+  return Array.from(await fetchCommenters(videoIds, pages));
+}
+
+/**
+ * Finds the channels most like this one.
+ *
+ * YouTube removed `search?relatedToVideoId` in 2023, so similarity has to be
+ * constructed. Four signals, cheapest first:
+ *
+ *   citations  — channels this one links from its own video descriptions (0 units)
+ *   featured   — channels it lists under Featured Channels (1 unit)
+ *   co-ranking — channels that rank for the same viewer queries (~300 units)
+ *   overlap    — share of engaged commenters the two channels have in common
+ *
+ * Co-ranking finds who competes for the same viewers; overlap measures whether
+ * they actually share them.
+ */
+export async function findSimilarChannels(channelId: string): Promise<SimilarChannel[]> {
+  if (!API_KEY) throw new Error('YouTube API Key is missing');
+
+  const cached = similarCache.get(channelId);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  const [source] = await fetchChannelsByIds([channelId]);
+  const uploads = source?.contentDetails?.relatedPlaylists?.uploads;
+  if (!source || !uploads) return [];
+
+  const baseline = await fetchChannelBaseline(channelId, uploads);
+  if (!baseline) return [];
+
+  const bestVideos = [...baseline.videos].sort((a, b) => b.views - a.views);
+  const topTitles = bestVideos.slice(0, 8).map(v => v.title).filter(Boolean);
+
+  // Citations: read the descriptions of the channel's own best videos (1 unit).
+  const described = await fetchVideosByIds(bestVideos.slice(0, 30).map(v => v.id), 'snippet');
+  const mentions = extractChannelMentions(described.map((v: any) => v.snippet?.description ?? ''));
+  const citedHandles = await mapWithConcurrency(mentions.handles.slice(0, MAX_MENTION_HANDLES), 6, resolveHandle);
+  const cited = new Set([...mentions.ids, ...citedHandles.filter(Boolean)] as string[]);
+
+  const featured = new Set(await fetchFeaturedChannels(channelId));
+
+  // Co-ranking: who else shows up for the queries this channel wins on.
+  //
+  // Position matters. Counting a bare appearance gives the channel ranked #1 and
+  // the channel ranked #48 the same credit, and since a search returns 50 results
+  // across only three queries, almost every candidate ends up on exactly 1 — every
+  // row scores identically and the list isn't ranked at all. Weight by rank instead.
+  const coRankCounts = new Map<string, number>();
+  const coRankWeights = new Map<string, number>();
+  try {
+    const { queries } = await getCompetitorQueries({ channelTitle: source.snippet.title, topTitles });
+    const publishedAfter = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+
+    const perQuery = await Promise.all(
+      queries.map(async (q) => {
+        const params = new URLSearchParams({
+          part: 'snippet', type: 'video', q, order: 'viewCount', maxResults: '50', publishedAfter, key: API_KEY!,
+        });
+        try {
+          const res = await fetch(`${BASE_URL}/search?${params.toString()}`);
+          const data = await handleYoutubeResponse(res);
+          // Keep each channel's best position within this query.
+          const best = new Map<string, number>();
+          (data.items || []).forEach((item: any, index: number) => {
+            const id = item.snippet?.channelId;
+            if (id && !best.has(id)) best.set(id, index);
+          });
+          return best;
+        } catch {
+          return new Map<string, number>();
+        }
+      })
+    );
+
+    for (const best of perQuery) {
+      for (const [id, index] of best) {
+        coRankCounts.set(id, (coRankCounts.get(id) ?? 0) + 1);
+        coRankWeights.set(id, (coRankWeights.get(id) ?? 0) + (1 - index / SEARCH_PAGE_SIZE));
+      }
+    }
+  } catch (e) {
+    console.warn('Competitor query generation failed; relying on citations and featured channels:', e);
+  }
+
+  const candidateIds = Array.from(new Set([...coRankCounts.keys(), ...cited, ...featured])).filter(
+    id => id !== channelId
+  );
+  if (candidateIds.length === 0) return [];
+
+  // Rank cheaply before paying for comments: hand-curated links first, then the
+  // channels that co-ranked most often.
+  const prioritised = candidateIds
+    .sort((a, b) => {
+      const weight = (id: string) =>
+        (featured.has(id) ? 4 : 0) + (cited.has(id) ? 3 : 0) + (coRankCounts.get(id) ?? 0);
+      return weight(b) - weight(a);
+    })
+    .slice(0, MAX_SIMILAR_CANDIDATES);
+
+  const candidates = await fetchChannelsByIds(prioritised);
+  if (candidates.length === 0) return [];
+
+  // Paid once, deeply — every candidate's measured overlap scales with this sample.
+  const sourceCommenters = await fetchCommenters(
+    bestVideos.slice(0, COMMENT_VIDEOS_SOURCE).map(v => v.id),
+    COMMENT_PAGES_SOURCE
+  );
+
+  const overlaps = await mapWithConcurrency(candidates, 4, async (candidate: any) => {
+    const empty = { overlap: 0, sample: 0, shared: 0 };
+    const candidateUploads = candidate.contentDetails?.relatedPlaylists?.uploads;
+    if (!candidateUploads || sourceCommenters.size < MIN_OVERLAP_SAMPLE) return empty;
+
+    const videoIds = await topVideoIds(candidate.id, candidateUploads, COMMENT_VIDEOS_CANDIDATE);
+    const commenters = await fetchCommenters(videoIds, COMMENT_PAGES_CANDIDATE);
+    if (commenters.size < MIN_OVERLAP_SAMPLE) return { ...empty, sample: commenters.size };
+
+    let shared = 0;
+    for (const id of commenters) if (sourceCommenters.has(id)) shared++;
+
+    const overlap = overlapCoefficient(sourceCommenters, commenters);
+    const meaningful = shared >= MIN_SHARED_COMMENTERS && overlap >= MIN_MEANINGFUL_OVERLAP;
+    return { overlap: meaningful ? overlap : 0, sample: commenters.size, shared };
+  });
+
+  const sourceSubs = toNum(source.statistics?.subscriberCount);
+
+  const results: SimilarChannel[] = candidates.map((c: any, index: number) => {
+    const coRankCount = coRankCounts.get(c.id) ?? 0;
+    const coRankWeight = coRankWeights.get(c.id) ?? 0;
+    const isCited = cited.has(c.id);
+    const isFeatured = featured.has(c.id);
+    const { overlap, sample, shared } = overlaps[index];
+
+    const subs = toNum(c.statistics?.subscriberCount);
+    const sizeRatio = sourceSubs > 0 && subs > 0 ? subs / sourceSubs : 0;
+    const isPeer = sizeRatio > 0 && sizeRatio <= PEER_SIZE_RATIO && sizeRatio >= 1 / PEER_SIZE_RATIO;
+
+    const reasons: string[] = [];
+    if (overlap > 0) {
+      reasons.push(`${shared} of its ${sample} sampled commenters also comment on ${source.snippet.title}`);
+    }
+    if (isFeatured) reasons.push(`${source.snippet.title} lists it under featured channels`);
+    if (isCited) reasons.push(`Linked from ${source.snippet.title}'s video descriptions`);
+    if (coRankCount > 0) {
+      reasons.push(`Ranks alongside them for ${coRankCount} shared viewer ${coRankCount === 1 ? 'query' : 'queries'}`);
+    }
+    if (!isPeer && sizeRatio > 0) {
+      reasons.push(sizeRatio > 1 ? `${Math.round(sizeRatio)}x bigger — context, not a model` : 'Much smaller audience');
+    }
+
+    // Overlap is the only *measured* signal — the others are structural hints — so
+    // it dominates when present. Its scale is set by how deeply we sampled the
+    // source, so it ranks within one result set rather than being portable.
+    // Co-ranking is rank-weighted, not counted, or every row ties.
+    const raw = overlap * 2000 + coRankWeight * 26 + (isCited ? 18 : 0) + (isFeatured ? 22 : 0);
+    const score = Math.round(Math.min(100, raw * sizeProximity(sizeRatio)));
+
+    const matchKind: SimilarChannel['matchKind'] =
+      overlap > 0 ? 'audience' : isFeatured ? 'featured' : isCited ? 'linked' : 'topic';
+
+    return {
+      id: c.id,
+      title: c.snippet.title,
+      handle: c.snippet.customUrl || `@${c.id}`,
+      avatarUrl: c.snippet.thumbnails?.default?.url,
+      subscriberCount: c.statistics?.subscriberCount ?? '0',
+      coRankCount,
+      cited: isCited,
+      featured: isFeatured,
+      audienceOverlap: overlap,
+      overlapSampleSize: sample,
+      sharedCommenters: shared,
+      sizeRatio,
+      isPeer,
+      matchKind,
+      score,
+      reasons,
+    };
+  });
+
+  const sorted = results.filter(r => r.score > 0).sort((a, b) => b.score - a.score);
+  similarCache.set(channelId, { value: sorted, expiresAt: Date.now() + SIMILAR_TTL_MS });
+  return sorted;
 }
 
 export interface ChannelLink {

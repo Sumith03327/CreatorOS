@@ -100,13 +100,38 @@ export interface MomentumResult {
 // ~2000 views/hour (≈48K/day) sustained across recent uploads is exceptional;
 // treat it as the top of the velocity scale.
 const VELOCITY_CEILING_VPH = 2000;
-// Doubling your own recent back catalogue is about as hot as a channel gets.
-// Measured against live data: median-over-median lift clusters between 0.3 and
-// 1.2, so a ceiling of 3 compressed every real channel into the bottom third of
-// the scale and made the "Surging" tier unreachable.
+/**
+ * Lift maps onto the score between these bounds: halving your own back catalogue
+ * scores 0, holding flat scores ~33, doubling scores 100. Measured against live
+ * data, median-over-median lift clusters between 0.3 and 1.2, so a flat channel
+ * must not land halfway up the scale — it isn't gaining momentum, it's steady.
+ */
+const LIFT_FLOOR = 0.5;
 const LIFT_CEILING = 2;
-// A channel this young that's already moving fast came out of nowhere.
-const BREAKOUT_MAX_AGE_MONTHS = 18;
+
+/**
+ * Momentum is about *change*, so lift carries most of the weight. Velocity is
+ * log-scaled views-per-hour, which is really a proxy for reach — weighting it
+ * heavily made the list rank channels by size. It stays as a secondary term so
+ * that, among two channels improving equally, the one people actually watch wins.
+ */
+const LIFT_WEIGHT = 0.75;
+const VELOCITY_WEIGHT = 0.25;
+
+/**
+ * Below this many sampled uploads, a channel has no back catalogue because it is
+ * genuinely new, and its velocity is the whole truth about it. Above it, a
+ * missing back catalogue means something else: the channel uploads so often that
+ * its last 50 videos are all younger than the maturity window. Those are news and
+ * clip firehoses, and scoring them on raw velocity floats them to the top of
+ * every niche. They are unproven, not surging.
+ */
+const NEW_CHANNEL_UPLOAD_COUNT = 12;
+// A channel this young that's already moving fast came out of nowhere. Two years
+// is still young for a channel: against live data an 18-month cutoff was excluding
+// 20-month-old channels sitting at 9x lift on 28K subscribers, which is exactly
+// what the radar exists to surface.
+const BREAKOUT_MAX_AGE_MONTHS = 24;
 const BREAKOUT_MIN_SCORE = 55;
 
 /**
@@ -185,10 +210,17 @@ export function computeMomentum(input: MomentumInput): MomentumResult {
   // Log scale on velocity so channels spanning orders of magnitude stay comparable.
   const velocityScore = clamp01(Math.log10(recentMedianVph + 1) / Math.log10(VELOCITY_CEILING_VPH)) * 100;
   const liftCredibility = clamp01(recentMedianViews / LIFT_CREDIBILITY_VIEWS);
-  const liftScore = clamp01(lift / LIFT_CEILING) * 100 * liftCredibility;
-  // With no back catalogue to compare against, velocity alone carries the score
-  // rather than a phantom zero lift dragging it down.
-  const score = Math.round(lift > 0 ? 0.55 * velocityScore + 0.45 * liftScore : velocityScore);
+  const liftScore = clamp01((lift - LIFT_FLOOR) / (LIFT_CEILING - LIFT_FLOOR)) * 100 * liftCredibility;
+
+  // With no lift, what the score means depends on *why* it's missing.
+  const isGenuinelyNew = ordered.length < NEW_CHANNEL_UPLOAD_COUNT;
+  const score = Math.round(
+    lift > 0
+      ? LIFT_WEIGHT * liftScore + VELOCITY_WEIGHT * velocityScore
+      : isGenuinelyNew
+        ? velocityScore
+        : VELOCITY_WEIGHT * velocityScore
+  );
 
   return {
     score,
@@ -211,6 +243,25 @@ export function momentumTier(score: number): OutlierTier {
   if (score >= 50) return { label: 'Hot', className: 'text-emerald-600' };
   if (score >= 30) return { label: 'Rising', className: 'text-amber-600' };
   return { label: 'Steady', className: 'text-slate-500' };
+}
+
+// --- Audience overlap -------------------------------------------------------
+
+/**
+ * Overlap coefficient: |A ∩ B| / min(|A|, |B|).
+ *
+ * Jaccard (|A ∩ B| / |A ∪ B|) is wrong here. The two commenter samples are
+ * routinely very different sizes, and Jaccard would report near-zero for a small
+ * channel whose audience sits almost entirely inside a large one's — which is
+ * exactly the relationship we most want to surface.
+ */
+export function overlapCoefficient(a: Set<string>, b: Set<string>): number {
+  const smaller = a.size <= b.size ? a : b;
+  const larger = smaller === a ? b : a;
+  if (smaller.size === 0) return 0;
+  let shared = 0;
+  for (const id of smaller) if (larger.has(id)) shared++;
+  return shared / smaller.size;
 }
 
 // --- Format & timing breakdowns ---------------------------------------------

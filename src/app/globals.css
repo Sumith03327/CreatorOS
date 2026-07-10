@@ -45,6 +45,28 @@
 }
 
 /* ============================================================
+   Type scale
+   Four steps carry every label on the dashboard. Weight — not
+   size — signals emphasis, so `font-bold` is reserved for
+   headings and numerals.
+   ============================================================ */
+@layer components {
+  /* Uppercase metadata label: "SUBS", "RECENTLY ANALYZED", "EST. EARNINGS" */
+  .label-caps {
+    @apply text-micro font-semibold uppercase tracking-wider text-muted-foreground;
+  }
+  /* Same, but colorless — for labels sitting on a tinted or photographic surface. */
+  .label-caps-on-tint {
+    @apply text-micro font-semibold uppercase tracking-wider;
+  }
+  /* Numerals align in columns and don't jitter while counting up. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+}
+
+/* ============================================================
    Agent Command Center — dark, AI-native design system
    Scoped under .command-center so the rest of the app stays light.
    ============================================================ */
