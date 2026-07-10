@@ -19,6 +19,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { TrendScoutResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { WinningFormulaPanel, useWinningFormula } from './WinningFormula';
 import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
@@ -91,6 +92,7 @@ export function TrendScoutWorkspace({ agent, onBack }: { agent: BuiltinAgent; on
   const [channel, setChannel] = useState('');
   const [timeframe, setTimeframe] = useState('month');
   const { run, reset, phase, statuses, result, error } = useAgentRun<TrendScoutResult>();
+  const { items: formula, refresh: refreshFormula } = useWinningFormula(agent.evidence);
 
   const canRun = niche.trim().length > 2 && phase !== 'running';
 
@@ -102,6 +104,7 @@ export function TrendScoutWorkspace({ agent, onBack }: { agent: BuiltinAgent; on
         (channel.trim() ? ` My channel: ${channel.trim()}.` : '') +
         ` Use your tools to ground every idea in a real video or gap you actually found.`,
       deliverable: 'trend-scout',
+      formula,
       tools: agent.tools,
       skills: agent.skills,
       model: agent.model,
@@ -167,6 +170,10 @@ export function TrendScoutWorkspace({ agent, onBack }: { agent: BuiltinAgent; on
           )}
         </div>
       </div>
+
+      {(agent.evidence?.length ?? 0) > 0 && phase !== 'done' && (
+        <WinningFormulaPanel kinds={agent.evidence ?? []} items={formula} onChanged={refreshFormula} />
+      )}
 
       {(phase === 'running' || statuses.length > 0) && <ActivityRail statuses={statuses} phase={phase} />}
 

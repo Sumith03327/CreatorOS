@@ -37,6 +37,7 @@ import * as store from '@/services/agent-store';
 import type { CustomAgent, ChatMessage } from '@/services/agent-store';
 import { BUILTIN_AGENTS, type BuiltinAgent } from '@/ai/agents/builtin-agents';
 import { hasWorkspace, AgentWorkspaceRouter } from '@/components/agents/workspace';
+import { WinningFormulaPanel, useWinningFormula } from '@/components/agents/workspace/WinningFormula';
 import { getConnectorCatalog, getConnections, connectApp, searchApps } from './connection-actions';
 import type { ToolkitInfo } from '@/services/composio';
 
@@ -170,6 +171,7 @@ export default function AgentsPage() {
   const [sending, setSending] = useState(false);
   const [statusText, setStatusText] = useState('');
   const [showMemory, setShowMemory] = useState(false);
+  const { items: formula, refresh: refreshFormula } = useWinningFormula(activeAgent?.evidence);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -295,6 +297,7 @@ export default function AgentsPage() {
       tools: b.tools,
       connectors: b.connectors,
       skills: b.skills,
+      evidence: b.evidence,
       model: b.model,
       memory: await store.getAgentMemory(b.id),
       createdAt: new Date().toISOString(),
@@ -392,6 +395,7 @@ export default function AgentsPage() {
           tools: agent.tools,
           connectors: agent.connectors,
           skills: agent.skills,
+          formula,
           youtubeUrl: agent.useYouTubeContext ? youtubeUrl : undefined,
         }),
       });
@@ -790,6 +794,17 @@ export default function AgentsPage() {
                     Nothing yet. As you chat, this agent automatically remembers durable facts about you and your channel — and uses them in future conversations.
                   </p>
                 )}
+              </div>
+            )}
+
+            {/* Winning Formula — proven material this agent grounds on. */}
+            {(activeAgent.evidence?.length ?? 0) > 0 && messages.length === 0 && (
+              <div className="mb-4">
+                <WinningFormulaPanel
+                  kinds={activeAgent.evidence ?? []}
+                  items={formula}
+                  onChanged={refreshFormula}
+                />
               </div>
             )}
 

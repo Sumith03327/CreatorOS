@@ -49,6 +49,8 @@ export interface CustomAgent {
   connectors?: string[];
   /** Expert skill playbooks this agent can load on demand. */
   skills?: string[];
+  /** Kinds of proven material this agent grounds on (Winning Formula). */
+  evidence?: ('title' | 'hook' | 'video' | 'description')[];
   /** Durable, distilled facts this agent has learned about the user, injected
    *  into its system prompt so it "remembers" across separate conversations. */
   memory?: string;

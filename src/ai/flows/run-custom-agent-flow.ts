@@ -37,6 +37,12 @@ export interface RunCustomAgentInput {
   /** Expert skill playbooks this agent may load on demand (see src/ai/skills). */
   skills?: string[];
   /**
+   * The creator's Winning Formula — proven material they curated. Exposed to the
+   * agent as a tool rather than dumped into the prompt, so it shows up in the
+   * activity trail and counts as real evidence for deliverable grounding.
+   */
+  formula?: FormulaEvidence[];
+  /**
    * Workspace mode: instead of streaming prose, compose a typed JSON result
    * matching this deliverable schema (see src/ai/agents/deliverables.ts).
    */
@@ -46,6 +52,24 @@ export interface RunCustomAgentInput {
   memory?: string;
   /** Legacy: prepend a one-off YouTube snapshot to the user message. */
   youtubeUrl?: string;
+}
+
+/**
+ * One piece of proven material from the creator's Winning Formula. Structurally
+ * compatible with `EvidenceItem` in formula-store, but declared here so the
+ * server never imports a `'use client'` module.
+ */
+export interface FormulaEvidence {
+  kind: string;
+  text: string;
+  source?: string;
+  meta?: {
+    channel?: string;
+    views?: number;
+    subscribers?: number;
+    outlierScore?: number;
+    url?: string;
+  };
 }
 
 /** Events emitted while an agent runs, for the streaming UI. */
@@ -199,7 +223,63 @@ function buildSystemPrompt(input: RunCustomAgentInput): string {
   // Progressive disclosure: index only. Full playbooks arrive via `load_skill`.
   prompt += buildSkillIndex(resolveSkills(input.skills));
 
+  // Same idea for proven data: announce it, don't inline it.
+  if (input.formula?.length) {
+    prompt +=
+      `\n\n--- THE CREATOR'S WINNING FORMULA ---\n` +
+      `They have curated ${input.formula.length} proven item(s) — titles, hooks or videos that already worked. ` +
+      `Call the \`get_winning_formula\` tool BEFORE scoring, ideating or writing, and ground your output in those real patterns rather than generic advice. Read it once.`;
+  }
+
   return prompt;
+}
+
+const MAX_FORMULA_ITEMS = 40;
+
+/** Render the Winning Formula compactly: the numbers are what make it evidence. */
+function formatFormula(items: FormulaEvidence[]): string {
+  const lines = items.slice(0, MAX_FORMULA_ITEMS).map((i) => {
+    const m = i.meta ?? {};
+    const bits = [
+      m.channel,
+      m.views != null ? `${m.views.toLocaleString()} views` : null,
+      m.subscribers != null ? `${m.subscribers.toLocaleString()} subs` : null,
+      m.outlierScore != null ? `${m.outlierScore.toFixed(1)}x outlier` : null,
+    ].filter(Boolean);
+    return `- [${i.kind}] "${i.text}"${bits.length ? ` — ${bits.join(' | ')}` : ''}`;
+  });
+  const omitted = Math.max(0, items.length - MAX_FORMULA_ITEMS);
+  return (
+    `The creator's Winning Formula — ${items.length} proven item(s) they curated:\n` +
+    lines.join('\n') +
+    (omitted ? `\n…and ${omitted} more.` : '') +
+    `\n\nGround your work in these: reuse the patterns that made them work.\n` +
+    `Only items marked [video] may be cited as \`evidence\` — copy their title, channel and numbers VERBATIM. ` +
+    `Items marked [title], [hook] or [description] are patterns to learn from, never evidence; do not invent a channel or view count for them.`
+  );
+}
+
+/** The `get_winning_formula` tool, offered only when the creator has curated data. */
+function buildFormulaSchema(kinds: string[]): MeshToolSchema {
+  return {
+    type: 'function',
+    function: {
+      name: 'get_winning_formula',
+      description:
+        "Read the creator's Winning Formula: titles, hooks, videos and descriptions that are PROVEN to work, which they curated from their own channel, competitors, or outlier research. Call this before scoring, ideating, or writing — patterns from real winners beat generic advice.",
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            enum: kinds,
+            description: 'Optionally restrict to one kind of evidence. Omit to read everything.',
+          },
+        },
+        required: [],
+      },
+    },
+  };
 }
 
 /** The `load_skill` tool, scoped to the skills THIS agent is allowed to read. */
@@ -280,15 +360,22 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
   /** Everything the agent's tools returned — the ground truth for validation. */
   const toolOutputs: string[] = [];
 
+  // The Winning Formula is read once; re-reading it just burns steps.
+  const formula = input.formula ?? [];
+  const formulaKinds = Array.from(new Set(formula.map((f) => f.kind)));
+  let formulaRead = false;
+
   /**
    * Rebuilt each step: `load_skill` only offers the skills not yet loaded, and
-   * disappears entirely once they all are. Without this, models happily call it
-   * every iteration until the step cap, which is slow and bloats the context.
+   * disappears entirely once they all are. Same for `get_winning_formula`.
+   * Without this, models happily call them every iteration until the step cap,
+   * which is slow and bloats the context.
    */
   const currentToolSchemas = () => {
     const remaining = agentSkills.filter((s) => !loadedSkills.has(s.name)).map((s) => s.name);
     const skillSchemas = remaining.length ? [buildLoadSkillSchema(remaining)] : [];
-    return [...localSchemas, ...composioSchemas, ...skillSchemas];
+    const formulaSchemas = formula.length && !formulaRead ? [buildFormulaSchema(formulaKinds)] : [];
+    return [...localSchemas, ...composioSchemas, ...skillSchemas, ...formulaSchemas];
   };
 
   try {
@@ -314,7 +401,20 @@ export async function* runCustomAgentStream(input: RunCustomAgentInput): AsyncGe
           }
 
           let result: string;
-          if (name === 'load_skill') {
+          if (name === 'get_winning_formula') {
+            const kind = String(args.kind ?? '').trim();
+            const picked = kind ? formula.filter((f) => f.kind === kind) : formula;
+            formulaRead = true;
+            yield {
+              type: 'status',
+              content: `Reading your winning formula (${picked.length} proven ${kind || 'item'}${picked.length === 1 ? '' : 's'})…`,
+            };
+            result = picked.length
+              ? formatFormula(picked)
+              : `Your Winning Formula has no ${kind || 'items'} yet.`;
+            // Counts as real evidence: a citation from here is not a hallucination.
+            toolOutputs.push(result);
+          } else if (name === 'load_skill') {
             const requested = String(args.skill ?? '');
             const skill = agentSkills.find((s) => s.name === requested) ? getSkill(requested) : null;
             if (!skill) {

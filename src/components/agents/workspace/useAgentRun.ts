@@ -15,6 +15,8 @@ export interface AgentRunRequest {
   tools?: string[];
   connectors?: string[];
   skills?: string[];
+  /** The creator's curated proven material; read by the agent as a tool. */
+  formula?: unknown[];
   model?: string;
   memory?: string;
   history?: { role: 'user' | 'assistant'; content: string }[];

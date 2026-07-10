@@ -18,6 +18,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { TitleDoctorResult, Lever } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { WinningFormulaPanel, useWinningFormula } from './WinningFormula';
 import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
@@ -113,6 +114,7 @@ export function TitleDoctorWorkspace({ agent, onBack }: { agent: BuiltinAgent; o
   const [title, setTitle] = useState('');
   const [niche, setNiche] = useState('');
   const { run, reset, phase, statuses, result, error } = useAgentRun<TitleDoctorResult>();
+  const { items: formula, refresh: refreshFormula } = useWinningFormula(agent.evidence);
 
   const canRun = title.trim().length > 2 && phase !== 'running';
 
@@ -124,6 +126,7 @@ export function TitleDoctorWorkspace({ agent, onBack }: { agent: BuiltinAgent; o
         `Score and rewrite this title: "${titleToScore.trim()}".` +
         (niche.trim() ? ` The channel's niche is: ${niche.trim()}.` : ''),
       deliverable: 'title-doctor',
+      formula,
       tools: agent.tools,
       skills: agent.skills,
       model: agent.model,
@@ -187,6 +190,10 @@ export function TitleDoctorWorkspace({ agent, onBack }: { agent: BuiltinAgent; o
           )}
         </div>
       </div>
+
+      {(agent.evidence?.length ?? 0) > 0 && phase !== 'done' && (
+        <WinningFormulaPanel kinds={agent.evidence ?? []} items={formula} onChanged={refreshFormula} />
+      )}
 
       {(phase === 'running' || statuses.length > 0) && <ActivityRail statuses={statuses} phase={phase} />}
 

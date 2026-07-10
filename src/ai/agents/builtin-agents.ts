@@ -41,6 +41,12 @@ export interface BuiltinAgent {
   connectors?: string[];
   /** Expert playbooks this agent can load on demand (see src/ai/skills). */
   skills?: string[];
+  /**
+   * Which kinds of proven material this agent grounds on, from the creator's
+   * Winning Formula. Omit for agents whose evidence is the user's own accounts
+   * (Sponsorship, Analytics) rather than curated content.
+   */
+  evidence?: ('title' | 'hook' | 'video' | 'description')[];
   /** Optional model override (defaults to deepseek-v3). */
   model?: string;
 }
@@ -69,6 +75,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'Then return: (1) a 0-10 clickability score with a one-line reason, (2) 5 stronger title rewrites using proven patterns (curiosity gap, numbers, stakes, specificity), and (3) one improved 10-second hook. Be specific and reference the patterns you found. Ask for the niche if it is unclear.',
     tools: ['analyze_title_patterns', 'search_youtube_videos', 'analyze_video_script', 'get_video_transcript'],
     skills: ['ctr-title-patterns', 'hook-writing'],
+    evidence: ['title', 'hook', 'video'],
   },
   {
     id: 'trend-scout',
@@ -83,6 +90,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'Deliver 5-8 specific video ideas ranked by opportunity, each with: a working title, the trend/insight it rides, and why it fits this creator. Prefer under-served angles over saturated ones. Ask for the niche and (optionally) their channel if not given.',
     tools: ['get_trending_summary', 'search_youtube_videos', 'analyze_title_patterns', 'get_youtube_channel'],
     skills: ['opportunity-scoring', 'channel-strategy'],
+    evidence: ['video', 'title'],
   },
   {
     id: 'script-writer',
@@ -97,6 +105,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'Structure every script as: HOOK (first 10-15s, high tension), SETUP, VALUE BEATS (with re-hooks to hold retention), and a clear CTA. Write in a natural spoken voice, not an essay. Ask for the topic, target length, and desired tone if missing.',
     tools: ['get_video_transcript', 'analyze_video_script', 'search_youtube_videos', 'get_youtube_channel'],
     skills: ['retention-structure', 'hook-writing'],
+    evidence: ['hook', 'video'],
   },
   {
     id: 'repurposer',
@@ -111,6 +120,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'By default produce: (1) an X/Twitter thread (6-9 posts, strong first line), (2) a LinkedIn post, (3) a short email newsletter, and (4) two 30-45s Shorts scripts pulled from the best moments. Keep each platform\'s native voice. Ask which formats they want if they only need some.',
     tools: ['get_video_transcript'],
     skills: ['repurposing-playbook'],
+    evidence: ['hook', 'video'],
   },
   {
     id: 'seo-optimizer',
@@ -125,6 +135,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'Produce: (1) a keyword-rich description (first 2 lines optimized for the search snippet), (2) 12-15 relevant tags, (3) timestamped chapters derived from the content, and (4) a pinned-comment prompt to drive engagement. Keep it accurate to the actual content — never invent chapters that are not in the transcript.',
     tools: ['get_video_transcript', 'analyze_title_patterns'],
     skills: ['youtube-seo', 'ctr-title-patterns'],
+    evidence: ['description', 'title', 'video'],
   },
   {
     id: 'calendar-planner',
@@ -139,6 +150,7 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
       'Output a week-by-week calendar: for each planned upload give a date/slot, working title, format (long/Short), the hook angle, and the goal (growth, retention, monetization). Balance safe bets with 1-2 experiments. Ask for cadence (uploads/week) and niche if unknown.',
     tools: ['get_youtube_channel', 'get_trending_summary', 'search_youtube_videos', 'analyze_title_patterns'],
     skills: ['channel-strategy', 'opportunity-scoring'],
+    evidence: ['video', 'title'],
   },
   {
     id: 'sponsorship-manager',

@@ -31,6 +31,21 @@ function haystack(toolOutputs: string[]): string {
   return toolOutputs.join('\n').toLowerCase();
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A Winning Formula entry is rendered as `- [kind] "text" — …`. Only [video]
+ * entries carry a channel and view count, so only they can be cited as evidence.
+ * A model given a pasted hook will happily present it as a video with an
+ * invented channel — this catches that.
+ */
+function citedANonVideoFormulaItem(hay: string, title: string): boolean {
+  const probe = escapeRegex(title.slice(0, Math.min(40, title.length)));
+  return new RegExp(`\\[(title|hook|description)\\]\\s*"${probe}`, 'i').test(hay);
+}
+
 // --- Typed results (mirrored by the UI renderers) --------------------------
 
 export type Lever = 'curiosity' | 'stakes' | 'specificity' | 'clarity' | 'deliverability';
@@ -104,14 +119,21 @@ export const DELIVERABLES: Record<string, DeliverableSpec> = {
       '`signal` names the evidence (an outlier, a gap, a trend). ' +
       '`evidence` MUST come from a real video you actually saw via your tools — if you have no real video, omit `evidence` entirely rather than inventing one. ' +
       '`why` is one sentence on why it fits this creator.',
-    // Strip any "evidence" whose video title never appeared in a tool result.
+    /**
+     * Strip any "evidence" the agent didn't actually see:
+     *  - a video title that never appeared in a tool result, or
+     *  - a Winning Formula entry that isn't a [video] (a pasted title or hook
+     *    dressed up as a video, complete with an invented channel).
+     */
     validate(parsed, toolOutputs) {
       const hay = haystack(toolOutputs);
       parsed.ideas = (parsed.ideas ?? []).map((idea: any) => {
-        const title = String(idea?.evidence?.videoTitle ?? '').toLowerCase().trim();
+        if (!idea?.evidence) return idea;
+        const title = String(idea.evidence.videoTitle ?? '').toLowerCase().trim();
         // Match on a prefix so minor truncation/quoting differences still count.
         const seen = title.length >= 8 && hay.includes(title.slice(0, Math.min(40, title.length)));
-        if (!seen && idea?.evidence) {
+        const misattributed = seen && citedANonVideoFormulaItem(hay, title);
+        if (!seen || misattributed) {
           const { evidence, ...rest } = idea;
           return rest;
         }

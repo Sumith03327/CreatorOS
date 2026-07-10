@@ -19,6 +19,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { SeoResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
+import { WinningFormulaPanel, useWinningFormula } from './WinningFormula';
 import { SendToMenu } from './SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
@@ -122,6 +123,7 @@ function ChapterValidator({ chapters }: { chapters: SeoResult['chapters'] }) {
 export function SeoOptimizerWorkspace({ agent, onBack }: { agent: BuiltinAgent; onBack: () => void }) {
   const [video, setVideo] = useState('');
   const { run, reset, phase, statuses, result, error } = useAgentRun<SeoResult>();
+  const { items: formula, refresh: refreshFormula } = useWinningFormula(agent.evidence);
 
   const canRun = video.trim().length > 5 && phase !== 'running';
 
@@ -130,6 +132,7 @@ export function SeoOptimizerWorkspace({ agent, onBack }: { agent: BuiltinAgent; 
       instructions: agent.instructions ?? '',
       userMessage: `Optimise this video for YouTube search: ${video.trim()}. Read the transcript and build the full upload package.`,
       deliverable: 'seo-optimizer',
+      formula,
       tools: agent.tools,
       skills: agent.skills,
       model: agent.model,
@@ -175,6 +178,10 @@ export function SeoOptimizerWorkspace({ agent, onBack }: { agent: BuiltinAgent; 
           )}
         </div>
       </div>
+
+      {(agent.evidence?.length ?? 0) > 0 && phase !== 'done' && (
+        <WinningFormulaPanel kinds={agent.evidence ?? []} items={formula} onChanged={refreshFormula} />
+      )}
 
       {(phase === 'running' || statuses.length > 0) && <ActivityRail statuses={statuses} phase={phase} />}
 
