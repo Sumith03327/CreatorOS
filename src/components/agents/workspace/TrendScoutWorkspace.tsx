@@ -20,7 +20,7 @@ import type { TrendScoutResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
 import { WinningFormulaPanel, useWinningFormula } from './WinningFormula';
-import { SendToMenu } from './SendToMenu';
+import { SendToMenu } from '../SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
@@ -58,6 +58,30 @@ function SaturationMeter({ level }: { level: string }) {
 }
 
 /** The outlier that proves the idea: views far above the channel's subscriber base. */
+/**
+ * The body of a pipeline card. Carries the reasoning with the idea — a card that
+ * just says "Make a video about X" is useless a week later, when the creator has
+ * forgotten why it scored well.
+ */
+function ideaCard(idea: TrendScoutResult['ideas'][number]): string {
+  const lines = [
+    `Opportunity score: ${(idea.score ?? 0).toFixed(1)}/10`,
+    `Signal: ${idea.signal}`,
+    `Saturation: ${idea.saturation} · Effort: ${idea.effort}`,
+    '',
+    `Why this fits: ${idea.why}`,
+  ];
+  if (idea.evidence) {
+    lines.push(
+      '',
+      'Evidence (a real video the scout actually saw):',
+      `- "${idea.evidence.videoTitle}" — ${idea.evidence.channel}`,
+      `  ${idea.evidence.views.toLocaleString()} views on ${idea.evidence.subscribers.toLocaleString()} subs`
+    );
+  }
+  return lines.join('\n');
+}
+
 function EvidenceRow({ e }: { e: NonNullable<TrendScoutResult['ideas'][number]['evidence']> }) {
   const ratio = e.subscribers > 0 ? e.views / e.subscribers : 0;
   const strong = ratio >= 3;
@@ -244,6 +268,19 @@ export function TrendScoutWorkspace({ agent, onBack }: { agent: BuiltinAgent; on
                     <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
                       {idea.effort} effort
                     </span>
+                  </div>
+
+                  {/* Production pipeline: an approved idea becomes a real card on
+                      the board the creator's team actually looks at. */}
+                  <div className="flex justify-end">
+                    <SendToMenu
+                      variant="dark"
+                      label="Add to pipeline"
+                      kinds={['task']}
+                      align="end"
+                      title={idea.title}
+                      body={ideaCard(idea)}
+                    />
                   </div>
                 </div>
               );

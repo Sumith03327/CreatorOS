@@ -51,18 +51,23 @@ async function readError(res: Response): Promise<string> {
 
 /**
  * Text -> image. Generates `n` thumbnail variations from a finished prompt.
+ *
+ * `model` is a Mesh image-model id, already validated by the caller against the
+ * live catalog (see mesh-models.ts). Falls back to GEN_MODEL when absent.
  */
 export async function generateThumbnails(opts: {
   prompt: string;
   size?: ThumbSize;
   n?: number;
   quality?: ThumbQuality;
+  model?: string;
 }): Promise<string[]> {
+  const model = opts.model || GEN_MODEL;
   const res = await fetch(`${MESH_BASE}/images/generations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getMeshKey()}` },
     body: JSON.stringify({
-      model: GEN_MODEL,
+      model,
       prompt: opts.prompt,
       size: opts.size ?? '1536x1024',
       n: Math.min(Math.max(opts.n ?? 2, 1), 4),
@@ -70,7 +75,16 @@ export async function generateThumbnails(opts: {
     }),
   });
 
-  if (!res.ok) throw new Error(`Image generation failed (${res.status}): ${await readError(res)}`);
+  if (!res.ok) {
+    const detail = await readError(res);
+    // A user-chosen model can fail for reasons the catalog can't predict (region,
+    // quota, transient). Retry once on the known-good default before giving up.
+    if (model !== GEN_MODEL) {
+      console.warn(`Image generation on ${model} failed (${res.status}): ${detail}. Falling back to ${GEN_MODEL}.`);
+      return generateThumbnails({ ...opts, model: GEN_MODEL });
+    }
+    throw new Error(`Image generation failed (${res.status}): ${detail}`);
+  }
   return normalizeImages(await res.json());
 }
 
@@ -111,14 +125,20 @@ export async function editWithReference(opts: {
   references: ReferenceImage[];
   size?: ThumbSize;
   n?: number;
+  /** Preferred reference-capable model. Tried first, then the proven defaults. */
+  model?: string;
 }): Promise<string[]> {
   const size = opts.size ?? '1536x1024';
   const n = Math.min(Math.max(opts.n ?? 2, 1), 4);
   const refs = opts.references.filter((r) => r?.blob && r.blob.size > 0);
 
-  if (refs.length === 0) return generateThumbnails({ prompt: opts.prompt, size, n });
+  if (refs.length === 0) return generateThumbnails({ prompt: opts.prompt, size, n, model: opts.model });
 
-  for (const model of [EDIT_MODEL, EDIT_FALLBACK_MODEL]) {
+  // The user's pick leads; the two proven engines back it up. Deduped so an
+  // explicit choice of a default doesn't get attempted twice.
+  const chain = [...new Set([opts.model, EDIT_MODEL, EDIT_FALLBACK_MODEL].filter(Boolean) as string[])];
+
+  for (const model of chain) {
     try {
       const res = await callEdit(model, opts.prompt, refs, size, n);
       if (res.ok) {
@@ -133,7 +153,8 @@ export async function editWithReference(opts: {
     }
   }
 
-  // Both edit engines failed — degrade to text-to-image so the user still gets something.
+  // Every edit engine failed — degrade to text-to-image so the user still gets
+  // something, though the creator's face will not be preserved.
   console.warn('All edit engines failed; falling back to text-to-image.');
   return generateThumbnails({ prompt: opts.prompt, size, n });
 }

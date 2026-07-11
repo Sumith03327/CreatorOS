@@ -21,6 +21,8 @@ import {
   Image as ImageIcon,
   Mail,
   BarChart3,
+  FileVideo,
+  GitCompareArrows,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -31,8 +33,15 @@ export interface BuiltinAgent {
   description: string;
   icon: LucideIcon;
   gradient: string;
-  /** 'CHAT' agents run through the tool-calling chat loop; 'STUDIO' opens the Thumbnail Studio. */
-  action: 'CHAT' | 'STUDIO';
+  /**
+   * 'CHAT'   — runs through the tool-calling chat loop (or its workspace, if it has one).
+   * 'STUDIO' — opens the Thumbnail Studio.
+   * 'TOOL'   — opens an existing full-page tool at `href`. These are the light-themed
+   *            dashboard tools that live in the Agent Hub rather than the sidebar.
+   */
+  action: 'CHAT' | 'STUDIO' | 'TOOL';
+  /** Route this agent opens. Required for action: 'TOOL'. */
+  href?: string;
   /** System prompt (only for CHAT agents). */
   instructions?: string;
   /** Tool names this agent may use. Empty = all tools. */
@@ -162,12 +171,35 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
     action: 'CHAT',
     instructions:
       'You are a Sponsorship Manager for a YouTube creator. You act on their REAL accounts through connected tools. ' +
-      'You can read and search Gmail for brand-deal / sponsorship emails, draft or send professional replies, and log deals to Google Sheets. ' +
+      'You can read and search Gmail for brand-deal / sponsorship emails, draft professional replies, log deals to Google Sheets or Airtable, ' +
+      'create the deal in HubSpot, and put the deliverable deadline on their Google Calendar. ' +
       'When asked to review deals: search Gmail for sponsorship inquiries, summarize each (brand, offer, deliverables, deadline), and propose next steps. ' +
-      'When drafting a reply, keep it professional and protect the creator\'s rates. Before SENDING anything or writing to a sheet, briefly confirm what you are about to do. If an app is not connected, tell the user to connect it in Connections.',
+      'When a deal is worth tracking, offer to log it to the CRM and put its deadline on the calendar — a deal without a deadline is how creators miss deliverables. ' +
+      'When drafting a reply, keep it professional and protect the creator\'s rates. Before SENDING anything, or writing to a sheet, CRM, or calendar, briefly confirm what you are about to do. ' +
+      'If an app is not connected, tell the user to connect it in Connections.',
     tools: [],
     skills: ['sponsorship-negotiation'],
-    connectors: ['gmail', 'googlesheets'],
+    connectors: ['gmail', 'googlesheets', 'airtable', 'hubspot', 'googlecalendar'],
+  },
+  {
+    id: 'video-performance',
+    name: 'Video Performance',
+    category: 'Analysis',
+    description: 'Tears down any video’s hook, retention, and packaging — and tells you what to fix next.',
+    icon: FileVideo,
+    gradient: 'from-violet-500 to-purple-600',
+    action: 'TOOL',
+    href: '/analyzer',
+  },
+  {
+    id: 'compare-channels',
+    name: 'Compare Channels',
+    category: 'Analysis',
+    description: 'Puts your channel head-to-head with a rival and shows where the gap actually is.',
+    icon: GitCompareArrows,
+    gradient: 'from-teal-500 to-emerald-600',
+    action: 'TOOL',
+    href: '/compare',
   },
   {
     id: 'analytics-reporter',

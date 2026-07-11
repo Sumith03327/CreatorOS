@@ -23,6 +23,7 @@ const key = (...parts: string[]) => [NS, SCHEMA, ...parts].join(':');
 
 const AGENTS_KEY = key('agents');
 const THUMBS_KEY = key('thumbnails');
+const PROJECTS_KEY = key('thumbnail-projects');
 const threadKey = (agentId: string) => key('thread', agentId);
 const memoryKey = (agentId: string) => key('memory', agentId);
 const MIGRATED_FLAG = key('migrated');
@@ -69,6 +70,50 @@ export interface SavedThumbnail {
   title: string;
   channelTitle?: string;
   createdAt: string;
+  /** Which project produced this. Absent on thumbnails made before projects existed. */
+  projectId?: string;
+  /** The Mesh model that rendered it, and the prompt it rendered from. */
+  modelId?: string;
+  prompt?: string;
+}
+
+/**
+ * One visual rule the project designs against. `dna` entries come from the
+ * Thumbnail DNA panel in Content Insights; `manual` entries are typed by hand.
+ *
+ * `enabled` is what gates whether the style is compiled into the generation
+ * prompt — a project can accumulate many styles and use a subset per render.
+ */
+export interface ThumbnailStyle {
+  id: string;
+  /** User-facing name, e.g. "Travel outliers — Jul". Editable. */
+  label: string;
+  origin: 'dna' | 'manual';
+  /** The headline rule. This is the sentence that reaches the image model. */
+  rule: string;
+  observations?: string[];
+  checklist?: string[];
+  /** DNA's suggested image prompt, with [SUBJECT] left as a placeholder. */
+  generationPrompt?: string;
+  niche?: string;
+  /** Provenance: the thumbnails this rule was read from. Shown as evidence. */
+  sourceThumbnails?: string[];
+  enabled: boolean;
+  createdAt: string;
+}
+
+export interface ThumbnailProject {
+  id: string;
+  name: string;
+  description?: string;
+  /** Channel whose style/face this project designs for. */
+  channelUrl?: string;
+  channelTitle?: string;
+  /** Preferred Mesh image model id. Validated against the live catalog at render. */
+  modelId?: string;
+  styles: ThumbnailStyle[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 // --- Storage backend (the swap point) ------------------------------------
@@ -228,17 +273,120 @@ export async function clearThread(agentId: string): Promise<void> {
   await backend.remove(threadKey(agentId));
 }
 
+// --- Thumbnail projects --------------------------------------------------
+
+export async function listProjects(): Promise<ThumbnailProject[]> {
+  await migrateLegacyOnce();
+  return (await backend.read<ThumbnailProject[]>(PROJECTS_KEY)) ?? [];
+}
+
+export async function getProject(id: string): Promise<ThumbnailProject | null> {
+  return (await listProjects()).find((p) => p.id === id) ?? null;
+}
+
+export async function createProject(
+  input: { name: string; description?: string; channelUrl?: string; channelTitle?: string; modelId?: string; styles?: ThumbnailStyle[] }
+): Promise<ThumbnailProject> {
+  const projects = await listProjects();
+  const now = new Date().toISOString();
+  const project: ThumbnailProject = {
+    id: newId(),
+    name: input.name.trim() || 'Untitled project',
+    description: input.description,
+    channelUrl: input.channelUrl,
+    channelTitle: input.channelTitle,
+    modelId: input.modelId,
+    styles: input.styles ?? [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  await backend.write(PROJECTS_KEY, [project, ...projects]);
+  return project;
+}
+
+export async function updateProject(
+  id: string,
+  patch: Partial<Omit<ThumbnailProject, 'id' | 'createdAt'>>
+): Promise<ThumbnailProject | null> {
+  const projects = await listProjects();
+  let updated: ThumbnailProject | null = null;
+  const next = projects.map((p) => {
+    if (p.id !== id) return p;
+    updated = { ...p, ...patch, updatedAt: new Date().toISOString() };
+    return updated;
+  });
+  if (updated) await backend.write(PROJECTS_KEY, next);
+  return updated;
+}
+
+/** Deletes the project. Its thumbnails are kept but detached, never silently destroyed. */
+export async function deleteProject(id: string): Promise<void> {
+  const projects = await listProjects();
+  await backend.write(PROJECTS_KEY, projects.filter((p) => p.id !== id));
+  const thumbs = await listThumbnails();
+  const detached = thumbs.map((t) => (t.projectId === id ? { ...t, projectId: undefined } : t));
+  await backend.write(THUMBS_KEY, detached);
+}
+
+// --- Styles within a project ---------------------------------------------
+
+/** Builds a style entry. Exported so the DNA panel and the Studio agree on shape. */
+export function makeStyle(input: Omit<ThumbnailStyle, 'id' | 'createdAt' | 'enabled'> & { enabled?: boolean }): ThumbnailStyle {
+  return {
+    ...input,
+    id: newId(),
+    enabled: input.enabled ?? true,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export async function addStyle(projectId: string, style: ThumbnailStyle): Promise<ThumbnailProject | null> {
+  const project = await getProject(projectId);
+  if (!project) return null;
+  return updateProject(projectId, { styles: [...project.styles, style] });
+}
+
+export async function updateStyle(
+  projectId: string,
+  styleId: string,
+  patch: Partial<Omit<ThumbnailStyle, 'id' | 'createdAt'>>
+): Promise<ThumbnailProject | null> {
+  const project = await getProject(projectId);
+  if (!project) return null;
+  const styles = project.styles.map((s) => (s.id === styleId ? { ...s, ...patch } : s));
+  return updateProject(projectId, { styles });
+}
+
+export async function removeStyle(projectId: string, styleId: string): Promise<ThumbnailProject | null> {
+  const project = await getProject(projectId);
+  if (!project) return null;
+  return updateProject(projectId, { styles: project.styles.filter((s) => s.id !== styleId) });
+}
+
+/** Moves a style up or down. Order is priority — earlier styles lead the prompt. */
+export async function reorderStyle(projectId: string, styleId: string, direction: -1 | 1): Promise<ThumbnailProject | null> {
+  const project = await getProject(projectId);
+  if (!project) return null;
+  const styles = [...project.styles];
+  const i = styles.findIndex((s) => s.id === styleId);
+  const j = i + direction;
+  if (i === -1 || j < 0 || j >= styles.length) return project;
+  [styles[i], styles[j]] = [styles[j], styles[i]];
+  return updateProject(projectId, { styles });
+}
+
 // --- Thumbnail gallery ---------------------------------------------------
 
-export async function listThumbnails(): Promise<SavedThumbnail[]> {
+export async function listThumbnails(projectId?: string): Promise<SavedThumbnail[]> {
   await migrateLegacyOnce();
-  return (await backend.read<SavedThumbnail[]>(THUMBS_KEY)) ?? [];
+  const all = (await backend.read<SavedThumbnail[]>(THUMBS_KEY)) ?? [];
+  return projectId ? all.filter((t) => t.projectId === projectId) : all;
 }
 
 /** Prepend newly generated thumbnails to the gallery and return the full list. */
 export async function addThumbnails(
   srcs: string[],
-  meta: { title: string; channelTitle?: string }
+  meta: { title: string; channelTitle?: string; projectId?: string; modelId?: string; prompt?: string }
 ): Promise<SavedThumbnail[]> {
   const existing = await listThumbnails();
   const now = new Date().toISOString();
@@ -247,6 +395,9 @@ export async function addThumbnails(
     src,
     title: meta.title || 'Untitled',
     channelTitle: meta.channelTitle,
+    projectId: meta.projectId,
+    modelId: meta.modelId,
+    prompt: meta.prompt,
     createdAt: now,
   }));
   const next = [...added, ...existing].slice(0, 60); // cap to keep storage bounded

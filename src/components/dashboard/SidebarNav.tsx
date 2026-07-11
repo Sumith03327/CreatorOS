@@ -17,8 +17,7 @@ import {
   Video,
   TrendingUp,
   Bookmark,
-  FileVideo,
-  GitCompareArrows
+  Newspaper
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -26,11 +25,13 @@ import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { getWatchlistCount, subscribeToWatchlistChanges } from "@/lib/watchlist"
 
+// Video Performance (/analyzer) and Compare Channels (/compare) deliberately live
+// in the Agent Hub rather than here — they're analysis tools, not dashboards. The
+// routes still work; they're reached from My Agents.
 const navItems = [
+  { name: "Creator Times", icon: Newspaper, href: "/times" },
   { name: "Channel Analyzer", icon: BarChart3, href: "/" },
-  { name: "Video Performance", icon: FileVideo, href: "/analyzer" },
-  { name: "Compare Channels", icon: GitCompareArrows, href: "/compare" },
-  { name: "Script with Max", icon: Sparkles, href: "/max-analyzer" },
+  { name: "Script & Analyses", icon: Sparkles, href: "/max-analyzer" },
 ]
 
 const bottomNavItems = [

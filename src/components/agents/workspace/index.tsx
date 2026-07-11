@@ -11,6 +11,7 @@ import { TitleDoctorWorkspace } from './TitleDoctorWorkspace';
 import { TrendScoutWorkspace } from './TrendScoutWorkspace';
 import { SeoOptimizerWorkspace } from './SeoOptimizerWorkspace';
 import { SponsorshipWorkspace } from './SponsorshipWorkspace';
+import { RepurposerWorkspace } from './RepurposerWorkspace';
 
 /** Agent ids that have a dedicated workspace. */
 export const WORKSPACE_IDS = new Set<string>([
@@ -18,6 +19,7 @@ export const WORKSPACE_IDS = new Set<string>([
   'trend-scout',
   'seo-optimizer',
   'sponsorship-manager',
+  'repurposer',
 ]);
 
 export function hasWorkspace(id: string): boolean {
@@ -34,6 +36,8 @@ export function AgentWorkspaceRouter({ agent, onBack }: { agent: BuiltinAgent; o
       return <SeoOptimizerWorkspace agent={agent} onBack={onBack} />;
     case 'sponsorship-manager':
       return <SponsorshipWorkspace agent={agent} onBack={onBack} />;
+    case 'repurposer':
+      return <RepurposerWorkspace agent={agent} onBack={onBack} />;
     default:
       return null;
   }

@@ -17,6 +17,7 @@ import {
   toNum,
 } from '@/lib/research-metrics';
 import { scoreTitle, type TitleFormula } from '@/ai/flows/get-insane-insights-flow';
+import { SendToMenu } from '@/components/agents/SendToMenu';
 import type { ResearchVideo } from '@/services/youtube';
 
 interface ResearchBriefProps {
@@ -52,17 +53,46 @@ export function ResearchBrief({ niche, videos, trends, formulas, loading }: Rese
     [videos]
   );
 
+  // The brief flattened to a title + body the delivery agent can write anywhere.
+  const deliverable = useMemo(() => {
+    const line = (items: string[], empty = '- Not enough data yet.') =>
+      items.length ? items : [empty];
+    const body = [
+      `Niche: ${niche}`,
+      `Read from ${videos.length} top outliers — not from a model's memory.`,
+      '',
+      "WHAT'S WORKING",
+      ...line(trends.map(t => `- ${t}`)),
+      '',
+      'WHICH LENGTH WINS',
+      ...line(formats.map(f => `- ${f.label}: ${f.medianOutlier.toFixed(1)}x median (${f.count} videos)`)),
+      '',
+      'TITLE FORMULAS',
+      ...line(formulas.map(f => `- ${f.template}  ·  e.g. "${f.example}"`)),
+      '',
+      'WHEN OUTLIERS PUBLISH',
+      bestSlot
+        ? `- Strongest slot: ${DAY_LABELS[bestSlot.day]} ${blockLabel(bestSlot.block)} (${bestSlot.count} outlier${bestSlot.count === 1 ? '' : 's'})`
+        : '- Not enough data yet.',
+    ].join('\n');
+    return { title: `${niche} — Research Brief`, body };
+  }, [niche, videos.length, trends, formats, formulas, bestSlot]);
+
   return (
     <TooltipProvider delayDuration={150}>
       <Card className="border-none shadow-sm bg-white p-6 space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-bold tracking-tight">The Brief</h2>
             <p className="text-xs text-muted-foreground">
               Everything below is read off the {videos.length} top outliers in {niche} — not from a model's memory.
             </p>
           </div>
-          {loading && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+          <div className="flex items-center gap-3 shrink-0">
+            {loading && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+            {/* #1 Universal Send-to: push this brief to any connected app. */}
+            {videos.length > 0 && <SendToMenu variant="light" title={deliverable.title} body={deliverable.body} />}
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

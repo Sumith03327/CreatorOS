@@ -77,6 +77,15 @@ export interface SeoResult {
   pinnedComment: string;
 }
 
+export interface RepurposeResult {
+  /** X/Twitter thread — one post per entry, first line must stand alone. */
+  thread: string[];
+  linkedin: string;
+  newsletter: { subject: string; body: string };
+  /** 30–45s vertical scripts pulled from the video's strongest moments. */
+  shorts: { hook: string; script: string }[];
+}
+
 export interface SponsorshipResult {
   deals: {
     brand: string;
@@ -94,6 +103,21 @@ export interface SponsorshipResult {
 // --- Specs ----------------------------------------------------------------
 
 export const DELIVERABLES: Record<string, DeliverableSpec> = {
+  repurposer: {
+    key: 'repurposer',
+    composingLabel: 'Repackaging for each platform…',
+    instruction:
+      'Now produce your final answer as STRICT JSON only, no prose outside it.\n' +
+      'Shape: {"thread": ["string"], "linkedin": "string", "newsletter": {"subject": "string", "body": "string"}, ' +
+      '"shorts": [{"hook": "string", "script": "string"}]}\n' +
+      '`thread` is 6-9 X/Twitter posts — the first must stand alone as a hook, each under 280 characters, no numbering prefixes.\n' +
+      '`linkedin` is one post in LinkedIn\'s native voice (a story or insight, short paragraphs, no hashtag spam).\n' +
+      '`newsletter.body` is a short email in plain paragraphs.\n' +
+      '`shorts` is exactly 2 vertical scripts of 30-45 seconds, each pulled from a real moment in the video — ' +
+      '`hook` is the opening line, `script` is the spoken body.\n' +
+      'Every item must be grounded in what the transcript actually said. Do not invent claims the video did not make.',
+  },
+
   'title-doctor': {
     key: 'title-doctor',
     composingLabel: 'Scoring the title…',

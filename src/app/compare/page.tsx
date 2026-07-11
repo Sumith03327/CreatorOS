@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
+import { getMyChannel } from '@/lib/my-channel';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -44,6 +45,19 @@ export default function ComparePage() {
 
   const patch = useCallback((id: number, changes: Partial<Slot>) => {
     setSlots(prev => prev.map(s => (s.id === id ? { ...s, ...changes } : s)));
+  }, []);
+
+  // You are always one side of a comparison — prefill the left slot with the
+  // connected channel so the creator only has to name the rival.
+  useEffect(() => {
+    const mine = getMyChannel();
+    if (!mine) return;
+    setSlots(prev => {
+      if (prev[0].input) return prev;
+      const next = [...prev];
+      next[0] = { ...next[0], input: mine.handle || mine.id };
+      return next;
+    });
   }, []);
 
   const loadSlot = useCallback(async (id: number, rawInput: string) => {

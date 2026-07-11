@@ -15,8 +15,11 @@ import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { analyzeChannelStyle } from '@/ai/flows/analyze-channel-style';
 import { generateThumbnailQuestions, type ThumbnailQuestion } from '@/ai/flows/thumbnail-questions';
+import { ProjectPanel } from '@/components/thumbnails/ProjectPanel';
+import { ModelPicker } from '@/components/thumbnails/ModelPicker';
 import * as store from '@/services/agent-store';
-import type { SavedThumbnail } from '@/services/agent-store';
+import { getMyChannel } from '@/lib/my-channel';
+import type { SavedThumbnail, ThumbnailProject } from '@/services/agent-store';
 
 const SIZES = [
   { value: '1536x1024', label: 'Wide 16:9-ish (1536×1024)' },
@@ -30,8 +33,13 @@ type Step = 'input' | 'refine' | 'results';
 const DARK_INPUT =
   'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
-export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
+export function ThumbnailStudio({ onBack, initialProjectId }: { onBack: () => void; initialProjectId?: string }) {
   const [step, setStep] = useState<Step>('input');
+
+  // Projects — a named bundle of style rules that feed the prompt.
+  const [projects, setProjects] = useState<ThumbnailProject[]>([]);
+  const [activeProject, setActiveProject] = useState<ThumbnailProject | null>(null);
+  const [modelId, setModelId] = useState<string | undefined>(undefined);
 
   // Inputs
   const [channelUrl, setChannelUrl] = useState('');
@@ -63,6 +71,50 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     store.listThumbnails().then(setGallery);
   }, []);
+
+  // Load projects, preselecting the one a deep link asked for.
+  useEffect(() => {
+    store.listProjects().then((list) => {
+      setProjects(list);
+      const initial = initialProjectId ? list.find((p) => p.id === initialProjectId) ?? null : null;
+      if (initial) {
+        setActiveProject(initial);
+        setModelId(initial.modelId);
+        if (initial.channelUrl) setChannelUrl(initial.channelUrl);
+      }
+      // Fall back to the connected channel so the creator isn't re-pasting their
+      // own URL here. A project's own channel always wins.
+      if (!initial?.channelUrl) {
+        const mine = getMyChannel();
+        if (mine) setChannelUrl((cur) => cur || mine.handle || mine.id);
+      }
+    });
+  }, [initialProjectId]);
+
+  /** Switching projects adopts that project's saved model preference. */
+  async function selectProject(id: string | null) {
+    const project = id ? projects.find((p) => p.id === id) ?? null : null;
+    setActiveProject(project);
+    setModelId(project?.modelId);
+    if (project?.channelUrl) setChannelUrl(project.channelUrl);
+  }
+
+  /** The model is a project-level preference, so remember it on the project. */
+  async function selectModel(id: string) {
+    setModelId(id);
+    if (activeProject) {
+      const updated = await store.updateProject(activeProject.id, { modelId: id });
+      if (updated) {
+        setActiveProject(updated);
+        setProjects(await store.listProjects());
+      }
+    }
+  }
+
+  // The thumbnails shown below the fold: scoped to the project when one is open.
+  const visibleGallery = activeProject
+    ? gallery.filter((t) => t.projectId === activeProject.id)
+    : gallery;
 
   function onPickFace(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -133,6 +185,14 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
       if (channelTitle) form.append('channelTitle', channelTitle);
       if (Object.keys(answers).length) form.append('answers', JSON.stringify(answers));
       if (faceFile) form.append('face', faceFile);
+      if (modelId) form.append('model', modelId);
+      // Only the enabled styles reach the model, in the order the user arranged them.
+      const enabledStyles = (activeProject?.styles ?? []).filter((s) => s.enabled);
+      if (enabledStyles.length) {
+        form.append('styles', JSON.stringify(enabledStyles.map((s) => ({
+          label: s.label, rule: s.rule, checklist: s.checklist, generationPrompt: s.generationPrompt, niche: s.niche,
+        }))));
+      }
       // Reproduce the creator from their channel thumbnails when "feature me" is on
       // (and they didn't upload their own photo).
       if (featureMe && !faceFile && samples.length) {
@@ -149,6 +209,10 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
         const updated = await store.addThumbnails(next, {
           title: title.trim(),
           channelTitle: channelTitle || undefined,
+          projectId: activeProject?.id,
+          // What the server actually rendered with — it may have fallen back.
+          modelId: data.model ?? undefined,
+          prompt: data.prompt ?? undefined,
         });
         setGallery(updated);
       }
@@ -175,6 +239,9 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
   }
 
   const n = parseInt(count, 10) || 2;
+  /** A reference image will be sent — so the model must be able to accept one. */
+  const needsReference = Boolean(faceFile) || (featureMe && samples.length > 0);
+  const activeStyles = (activeProject?.styles ?? []).filter((s) => s.enabled);
 
   return (
     <div className="max-w-5xl mx-auto space-y-6 py-2 animate-in fade-in">
@@ -192,6 +259,15 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
       {/* STEP 1 — inputs */}
       {step === 'input' && (
         <div className="cc-card p-6 space-y-5">
+            <ProjectPanel
+              projects={projects}
+              activeProject={activeProject}
+              onSelectProject={selectProject}
+              onProjectsChanged={(list, active) => { setProjects(list); setActiveProject(active); }}
+            />
+
+            <div className="h-px bg-white/10" />
+
             <div className="space-y-2">
               <Label className="text-slate-300">Your channel <span className="text-slate-500 font-normal">(optional — for style matching)</span></Label>
               <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3">
@@ -315,10 +391,33 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
                 <Textarea placeholder="e.g., add a jungle background, use green and yellow" className={cn('min-h-[60px]', DARK_INPUT)} value={notes} onChange={(e) => setNotes(e.target.value)} />
               </div>
 
+              {/* Model choice sits here, not on step 1, because only now do we know
+                  whether a reference image is going along — and that decides which
+                  models can preserve the creator's face. */}
+              <div className="space-y-2">
+                <Label className="text-slate-300">Image model</Label>
+                <ModelPicker value={modelId} onChange={selectModel} needsReference={needsReference} dark />
+              </div>
+
+              {activeStyles.length > 0 && (
+                <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+                  <p className="text-micro font-semibold uppercase tracking-wider text-primary/80">
+                    {activeStyles.length} style {activeStyles.length === 1 ? 'rule' : 'rules'} from {activeProject!.name}
+                  </p>
+                  <ul className="mt-1.5 space-y-1">
+                    {activeStyles.map((s, i) => (
+                      <li key={s.id} className="text-micro leading-relaxed text-slate-400">
+                        <span className="font-bold text-slate-300">{i + 1}.</span> {s.rule}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               <div className="flex gap-2">
                 <Button variant="outline" className="gap-2 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white" onClick={() => setStep('input')}><ChevronLeft className="h-4 w-4" /> Back</Button>
                 <Button className="flex-1 gap-2 cc-glow" onClick={generate} disabled={loading}>
-                  <Wand2 className="h-4 w-4" /> Generate Thumbnails
+                  <Wand2 className="h-4 w-4" /> Generate {n} Thumbnail{n > 1 ? 's' : ''}
                 </Button>
               </div>
           </div>
@@ -356,14 +455,16 @@ export function ThumbnailStudio({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {/* Persisted gallery — previously generated thumbnails, survive refresh */}
-      {gallery.length > 0 && (
+      {/* Persisted gallery — previously generated thumbnails, survive refresh.
+          Scoped to the open project so a project reads as a real workspace. */}
+      {visibleGallery.length > 0 && (
         <section className="space-y-3 pt-2">
           <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-400">
-            <span className="h-3 w-0.5 rounded bg-fuchsia-400" /> Your Thumbnails
+            <span className="h-3 w-0.5 rounded bg-fuchsia-400" />
+            {activeProject ? `${activeProject.name} — Thumbnails` : 'Your Thumbnails'}
           </h3>
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-            {gallery.map((t) => (
+            {visibleGallery.map((t) => (
               <div key={t.id} className="group relative rounded-xl overflow-hidden border border-white/10">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={t.src} alt={t.title} className="w-full aspect-video object-cover" />

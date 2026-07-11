@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Sparkles,
   Plus,
@@ -135,12 +136,15 @@ const CC_INPUT =
   'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 
 export default function AgentsPage() {
+  const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [view, setView] = useState<View>('LIST');
   const [agents, setAgents] = useState<CustomAgent[]>([]);
   const [activeAgent, setActiveAgent] = useState<CustomAgent | null>(null);
   /** The built-in agent currently open in its dedicated workspace. */
   const [workspaceAgent, setWorkspaceAgent] = useState<BuiltinAgent | null>(null);
+  /** Project to preselect when the Studio opens via deep link from Content Insights. */
+  const [studioProjectId, setStudioProjectId] = useState<string | undefined>(undefined);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -176,6 +180,23 @@ export default function AgentsPage() {
 
   useEffect(() => {
     setMounted(true);
+    // Deep links from Content Insights. Read from location rather than
+    // useSearchParams — this page has no Suspense boundary, and useSearchParams
+    // would opt the whole route out of prerendering.
+    //   ?studio=1&project=<id>  — Thumbnail DNA panel → Thumbnail Studio
+    //   ?agent=<id>             — Teardown → a built-in agent's workspace
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('studio')) {
+      setStudioProjectId(params.get('project') ?? undefined);
+      setView('STUDIO');
+    } else {
+      const agentId = params.get('agent');
+      const target = agentId ? BUILTIN_AGENTS.find((a) => a.id === agentId) : undefined;
+      if (target && hasWorkspace(target.id)) {
+        setWorkspaceAgent(target);
+        setView('WORKSPACE');
+      }
+    }
     store.listAgents().then(setAgents);
     // Load connector catalog + current connection statuses.
     getConnectorCatalog()
@@ -277,6 +298,11 @@ export default function AgentsPage() {
   async function openBuiltin(b: BuiltinAgent) {
     if (b.action === 'STUDIO') {
       setView('STUDIO');
+      return;
+    }
+    // A full-page tool that lives in the hub rather than the sidebar.
+    if (b.action === 'TOOL' && b.href) {
+      router.push(b.href);
       return;
     }
     // Agents with a dedicated interface skip the generic chat view entirely.
@@ -696,7 +722,7 @@ export default function AgentsPage() {
           </div>
         )}
 
-        {view === 'STUDIO' && <div className="relative z-10"><ThumbnailStudio onBack={() => setView('LIST')} /></div>}
+        {view === 'STUDIO' && <div className="relative z-10"><ThumbnailStudio onBack={() => setView('LIST')} initialProjectId={studioProjectId} /></div>}
 
         {view === 'WORKSPACE' && workspaceAgent && (
           <div className="relative z-10">

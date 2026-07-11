@@ -1370,6 +1370,36 @@ export async function findSimilarChannels(channelId: string): Promise<SimilarCha
   return sorted;
 }
 
+/**
+ * What Creator Times needs to know about a creator to judge whether a platform
+ * change affects them. `shortsShare` is the field that does most of the work: a
+ * Shorts monetization change is urgent for a Shorts channel and irrelevant to a
+ * long-form one, and nothing else we store tells us which they are.
+ *
+ * Costs ~3 quota units (one channel lookup, one uploads page, one stats batch),
+ * and the baseline is cached for 12h, so a repeat visit is free.
+ */
+export async function buildCreatorProfile(channelId: string): Promise<{
+  channelTitle: string;
+  subscriberCount: number;
+  shortsShare: number;
+} | null> {
+  if (!API_KEY || !channelId) return null;
+
+  const [channel] = await fetchChannelsByIds([channelId]);
+  const uploads = channel?.contentDetails?.relatedPlaylists?.uploads;
+  if (!channel || !uploads) return null;
+
+  const baseline = await fetchChannelBaseline(channelId, uploads);
+  const sample = baseline?.videos ?? [];
+
+  return {
+    channelTitle: channel.snippet.title,
+    subscriberCount: toNum(channel.statistics?.subscriberCount),
+    shortsShare: sample.length > 0 ? sample.filter(v => v.short).length / sample.length : 0,
+  };
+}
+
 export interface ChannelLink {
   label: string;
   url: string;

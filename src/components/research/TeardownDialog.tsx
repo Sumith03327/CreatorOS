@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Loader2, Quote, Copy, ListTree, Lightbulb, FileWarning } from 'lucide-react';
+import Link from 'next/link';
+import { Loader2, Quote, Copy, ListTree, Lightbulb, FileWarning, Stethoscope, ArrowRight, Check } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,11 +10,25 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/hooks/use-toast';
 import { formatMultiplier } from '@/lib/research-metrics';
 import { getVideoTeardown, type VideoTeardown } from '@/ai/flows/video-teardown-flow';
+import { addFormulaItems, type EvidenceItem } from '@/services/formula-store';
 import type { ResearchVideo } from '@/services/youtube';
 
 interface TeardownDialogProps {
   video: ResearchVideo | null;
   onClose: () => void;
+}
+
+/** Provenance shared by every evidence item saved from one outlier. */
+function evidenceMeta(video: ResearchVideo) {
+  return {
+    videoId: video.id,
+    url: `https://www.youtube.com/watch?v=${video.id}`,
+    channel: video.channelTitle,
+    views: parseInt(video.viewCount || '0', 10) || undefined,
+    subscribers: parseInt(String(video.subscriberCount ?? ''), 10) || undefined,
+    outlierScore: video.outlierScore,
+    publishedAt: video.publishedAt,
+  };
 }
 
 /**
@@ -25,6 +40,9 @@ export function TeardownDialog({ video, onClose }: TeardownDialogProps) {
   const [teardown, setTeardown] = useState<VideoTeardown | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** How many items landed in the formula this session, so the CTA can confirm. */
+  const [savedCount, setSavedCount] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!video) {
@@ -37,6 +55,7 @@ export function TeardownDialog({ video, onClose }: TeardownDialogProps) {
     setLoading(true);
     setError(null);
     setTeardown(null);
+    setSavedCount(null);
 
     getVideoTeardown({ videoId: video.id })
       .then(result => {
@@ -53,6 +72,36 @@ export function TeardownDialog({ video, onClose }: TeardownDialogProps) {
       cancelled = true;
     };
   }, [video]);
+
+  /**
+   * Sends this outlier's proven title (and hook, if one was found) into the
+   * Winning Formula, where the Title & Hook Doctor grounds its scoring. The
+   * store dedupes by text, so re-saving the same teardown is harmless.
+   */
+  async function sendToDoctor() {
+    if (!video) return;
+    setSaving(true);
+    try {
+      const meta = evidenceMeta(video);
+      const items: Omit<EvidenceItem, 'id' | 'addedAt'>[] = [
+        { kind: 'title', text: video.title, source: 'research', meta },
+      ];
+      if (teardown?.hook?.openingLines?.trim()) {
+        items.push({ kind: 'hook', text: teardown.hook.openingLines.trim(), source: 'research', meta });
+      }
+      const before = savedCount ?? 0;
+      await addFormulaItems(items);
+      setSavedCount(before + items.length);
+      toast({
+        title: 'Sent to the Title & Hook Doctor',
+        description: `${items.length === 2 ? 'Title and hook' : 'Title'} added to your Winning Formula.`,
+      });
+    } catch (e: any) {
+      toast({ variant: 'destructive', title: 'Could not save', description: e?.message });
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const copyOutline = () => {
     if (!teardown?.outline.length) return;
@@ -173,6 +222,38 @@ export function TeardownDialog({ video, onClose }: TeardownDialogProps) {
               )}
             </div>
           </ScrollArea>
+        )}
+
+        {/* Bridge into the Title & Hook Doctor — the outlier's proven title/hook
+            become grounding evidence the Doctor scores your drafts against. */}
+        {video && teardown && !loading && !error && (
+          <div className="mt-2 border-t pt-4">
+            {savedCount ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="flex items-center gap-2 text-sm font-medium text-emerald-800">
+                  <Check className="h-4 w-4 shrink-0" />
+                  Added to your Winning Formula
+                </p>
+                <Button asChild size="sm" variant="outline" className="h-8 gap-1.5 border-emerald-300 text-xs">
+                  <Link href="/agents?agent=title-doctor">
+                    Open Title &amp; Hook Doctor <ArrowRight className="h-3 w-3" />
+                  </Link>
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {teardown.hook?.openingLines
+                    ? 'Feed this winning title and hook to the Doctor to score your own against them.'
+                    : 'No transcript, but the title still works as proof — feed it to the Doctor.'}
+                </p>
+                <Button onClick={sendToDoctor} disabled={saving} size="sm" className="h-8 shrink-0 gap-1.5 text-xs font-bold">
+                  {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />}
+                  Send to Title &amp; Hook Doctor
+                </Button>
+              </div>
+            )}
+          </div>
         )}
       </DialogContent>
     </Dialog>

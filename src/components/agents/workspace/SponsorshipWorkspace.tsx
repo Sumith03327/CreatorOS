@@ -18,7 +18,7 @@ import type { BuiltinAgent } from '@/ai/agents/builtin-agents';
 import type { SponsorshipResult } from '@/ai/agents/deliverables';
 import { useAgentRun } from './useAgentRun';
 import { WorkspaceHeader, PhaseStepper, ActivityRail, SectionLabel } from './shell';
-import { SendToMenu } from './SendToMenu';
+import { SendToMenu } from '../SendToMenu';
 
 const DARK_INPUT = 'bg-white/5 border-white/10 text-white placeholder:text-slate-500 focus-visible:ring-primary/40';
 

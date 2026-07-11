@@ -16,6 +16,7 @@
 
 import { Composio } from '@composio/core';
 import type { MeshToolSchema } from '@/services/mesh';
+import { DELIVERY_TARGETS } from '@/services/delivery-targets';
 
 const COMPOSIO_USER_ID = 'creator-hub-user';
 
@@ -26,15 +27,12 @@ export interface Connector {
   logo: string;
 }
 
-/** Connectors we surface in the Connections UI (curated from Composio's 250+). */
-export const CONNECTORS: Connector[] = [
-  { slug: 'gmail', name: 'Gmail', logo: 'https://logos.composio.dev/api/gmail' },
-  { slug: 'googlesheets', name: 'Google Sheets', logo: 'https://logos.composio.dev/api/googlesheets' },
-  { slug: 'googledocs', name: 'Google Docs', logo: 'https://logos.composio.dev/api/googledocs' },
-  { slug: 'notion', name: 'Notion', logo: 'https://logos.composio.dev/api/notion' },
-  { slug: 'googlecalendar', name: 'Google Calendar', logo: 'https://logos.composio.dev/api/googlecalendar' },
-  { slug: 'slack', name: 'Slack', logo: 'https://logos.composio.dev/api/slack' },
-];
+/**
+ * Connectors we surface in the Connections UI. Derived from the delivery-target
+ * registry so the two can never drift: every app we offer to connect is an app
+ * we actually know how to write to, and every one has Composio-managed OAuth.
+ */
+export const CONNECTORS: Connector[] = DELIVERY_TARGETS.map(({ slug, name, logo }) => ({ slug, name, logo }));
 
 export function composioEnabled(): boolean {
   return !!process.env.COMPOSIO_API_KEY;
