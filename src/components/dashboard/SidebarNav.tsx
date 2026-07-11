@@ -4,12 +4,9 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useState, useEffect } from "react"
 import { 
-  BarChart3, 
-  Zap, 
+  BarChart3,
+  Zap,
   Users2,
-  Settings, 
-  HelpCircle, 
-  LogOut,
   ChevronRight,
   ChevronDown,
   Sparkles,
@@ -36,7 +33,6 @@ const navItems = [
 const bottomNavItems = [
   { name: "Action Plan", icon: Zap, href: "/plan" },
   { name: "My Agents", icon: Users2, href: "/agents" },
-  { name: "Settings", icon: Settings, href: "/settings" },
 ]
 
 export function SidebarNav() {
@@ -107,18 +103,6 @@ export function SidebarNav() {
         </nav>
       </div>
 
-      <div className="mt-auto p-6 space-y-4">
-        <div className="space-y-1">
-          <Link href="/help" className="flex items-center gap-3 px-3 py-2 text-sidebar-foreground/70 hover:text-white transition-colors text-sm">
-            <HelpCircle className="h-4 w-4" />
-            <span>Help</span>
-          </Link>
-          <button className="flex items-center gap-3 px-3 py-2 text-sidebar-foreground/70 hover:text-destructive transition-colors text-sm w-full">
-            <LogOut className="h-4 w-4" />
-            <span>Exit</span>
-          </button>
-        </div>
-      </div>
     </div>
   )
 }

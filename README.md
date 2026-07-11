@@ -83,6 +83,16 @@ Nine playbooks in [`src/ai/skills/`](src/ai/skills/): hook writing, CTR title pa
 
 Only the **index** (one line per skill) lives in the system prompt. The agent calls `load_skill` to pull a full playbook *when the task actually needs it* — progressive disclosure, so prompts stay lean and output stays expert. You watch it happen: `📚 Loading skill: CTR Title Patterns…`
 
+### 5. The Winning Formula — agents ground on *your* proven data
+
+Creators already know what works for them. Now the agents do too.
+
+The Winning Formula is a library of proven material the creator curates, with three ingest paths: **paste** a list they already keep, pull a **channel's** real videos sorted by views, or run an **outlier search** for videos that beat their own channel's normal performance.
+
+Like skills, the library is a **tool, not a prompt dump**. `get_winning_formula` appears in the activity trail, and — because its output lands in the same `toolOutputs` the grounding validator reads — a citation from the creator's own data counts as *real evidence*. Before this, an agent with no search tools had every citation stripped.
+
+The same lesson applied twice: told only in prose to cite videos, the model presented a pasted *hook* as a video with an invented channel. The validator now rejects it.
+
 ---
 
 ## Architecture
@@ -121,9 +131,12 @@ src/
 | Title & Hook Doctor | — | Score dial + rewrites |
 | Trend Scout | — | Opportunity board |
 | SEO Optimizer | — | Upload simulator |
+| Video Repurposer | — | Native platform previews |
+| Content Calendar | — | Month grid |
 | Sponsorship Manager | **Gmail · Sheets** | Deal inbox + rate calculator |
-| Analytics Reporter | **Gmail · Slack** | Chat |
-| Script Writer · Video Repurposer · Content Calendar | — | Chat |
+| Video Performance · Compare Channels | — | Full-page analysis tools |
+
+Every workspace can **Send to** Gmail, Google Docs, Sheets or Notion — the deliverable lands in the creator's real accounts. Gmail gets a *draft*, never a send.
 
 Plus **build your own** — describe an agent in one sentence and it drafts the prompt, category and skills.
 
