@@ -19,8 +19,8 @@ export type ThumbSize = '1536x1024' | '1024x1024' | '1024x1536';
 export type ThumbQuality = 'low' | 'medium' | 'high';
 
 function getMeshKey(): string {
-  const apiKey = process.env.MESH_API_KEY_ALL || process.env.MESH_API_KEY;
-  if (!apiKey) throw new Error('Mesh API Key is missing (set MESH_API_KEY_ALL or MESH_API_KEY)');
+  const apiKey = process.env.MESH_API_KEY_ALL;
+  if (!apiKey) throw new Error('Mesh API Key is missing (set MESH_API_KEY_ALL)');
   return apiKey;
 }
 

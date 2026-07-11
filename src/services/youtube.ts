@@ -13,7 +13,9 @@ import { isShort } from '@/lib/video-utils';
 import { findIrrelevant } from '@/ai/flows/niche-relevance-flow';
 import { getCompetitorQueries, getNicheSeedQueries } from '@/ai/flows/seed-queries-flow';
 
-const API_KEY = process.env.YOUTUBE_API_KEY || process.env.VITE_YOUTUBE_API_KEY || process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
+// One key, server-side only. The old NEXT_PUBLIC_ fallback would have bundled
+// this into client JS, and VITE_ was a leftover from a different build tool.
+const API_KEY = process.env.YOUTUBE_API_KEY;
 const BASE_URL = 'https://www.googleapis.com/youtube/v3';
 
 export interface YouTubeChannelData {

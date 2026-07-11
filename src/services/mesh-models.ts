@@ -9,7 +9,7 @@
  *   - we never claim a model preserves a creator's identity when it cannot, and
  *   - prices shown to the user are the prices Mesh will actually charge.
  *
- * Server-only (needs MESH_API_KEY). Exposed to the client via /api/models.
+ * Server-only (needs MESH_API_KEY_ALL). Exposed to the client via /api/models.
  */
 
 const MESH_MODELS_URL = 'https://api.meshapi.ai/v1/models';
@@ -51,8 +51,8 @@ const RECOMMENDED = new Set([
 ]);
 
 function getMeshKey(): string {
-  const apiKey = process.env.MESH_API_KEY_ALL || process.env.MESH_API_KEY;
-  if (!apiKey) throw new Error('Mesh API Key is missing (set MESH_API_KEY_ALL or MESH_API_KEY)');
+  const apiKey = process.env.MESH_API_KEY_ALL;
+  if (!apiKey) throw new Error('Mesh API Key is missing (set MESH_API_KEY_ALL)');
   return apiKey;
 }
 

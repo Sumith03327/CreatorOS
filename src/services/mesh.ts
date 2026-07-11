@@ -14,14 +14,18 @@ const MESH_API_URL = 'https://api.meshapi.ai/v1/chat/completions';
 const DEFAULT_MODEL = 'deepseek-ai/deepseek-v3';
 
 /**
- * Resolve the Mesh key. Prefer MESH_API_KEY_ALL (unrestricted — reaches all
- * 1000+ models + image/RAG endpoints); fall back to the older MESH_API_KEY
- * (historically scoped to deepseek-v3 only).
+ * Resolve the Mesh key. One key, unrestricted — it must reach every model the
+ * app routes to (deepseek for reasoning, gpt-4o-mini for vision, gpt-image-1 and
+ * gemini-2.5-flash-image for thumbnails).
+ *
+ * There used to be a fallback to a second, deepseek-scoped key. That was a trap:
+ * if the unrestricted key went missing, the app would silently fall back to one
+ * that 404s on every image and vision call. Better to fail loudly.
  */
 function getMeshKey(): string {
-  const apiKey = process.env.MESH_API_KEY_ALL || process.env.MESH_API_KEY;
+  const apiKey = process.env.MESH_API_KEY_ALL;
   if (!apiKey) {
-    console.error('Mesh API Key is missing (set MESH_API_KEY_ALL or MESH_API_KEY)');
+    console.error('Mesh API Key is missing (set MESH_API_KEY_ALL)');
     throw new Error('Mesh API Key is missing');
   }
   return apiKey;

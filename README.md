@@ -2,7 +2,7 @@
 
 **Agents that read, decide, and act on a YouTube creator's real work.**
 
-Built for the [Mesh API Hackathon 2026](https://hack.meshapi.ai). Nine agents share one engine — tool-calling, expert skills, durable memory, streaming — and they act on your *actual* accounts (Gmail, Sheets, Notion, Slack) through Composio's 1,000+ connectors.
+Built for the [Mesh API Hackathon 2026](https://hack.meshapi.ai). Ten agents share one engine — tool-calling, expert skills, a grounding validator, durable memory, streaming — and they act on your *actual* accounts (Gmail, Docs, Sheets) through Composio's 1,000+ connectors.
 
 ---
 
@@ -138,8 +138,6 @@ src/
 
 Every workspace can **Send to** Gmail, Google Docs, Sheets or Notion — the deliverable lands in the creator's real accounts. Gmail gets a *draft*, never a send.
 
-Plus **build your own** — describe an agent in one sentence and it drafts the prompt, category and skills.
-
 ---
 
 ## Setup
@@ -152,11 +150,13 @@ npm run dev          # http://localhost:9002 → /agents
 Create `.env.local`:
 
 ```bash
-MESH_API_KEY_ALL=…   # Mesh key with access to all models (preferred)
-MESH_API_KEY=…       # fallback; may be scoped to a single model
+MESH_API_KEY_ALL=…   # Mesh key — must be unrestricted (reaches every model below)
 COMPOSIO_API_KEY=…   # Composio *Developer Platform* key (ak_…), not the MCP consumer key
 YOUTUBE_API_KEY=…    # YouTube Data API v3
 ```
+
+Three keys, no fallbacks. A Mesh key scoped to a single model will 404 on every
+image and vision call, so the app fails loudly rather than degrading silently.
 
 Then open `/agents`, hit **Connect** on Gmail in the Connections panel, and ask the Sponsorship Manager to check your inbox.
 
