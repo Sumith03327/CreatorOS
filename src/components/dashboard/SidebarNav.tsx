@@ -6,8 +6,7 @@ import { useState, useEffect } from "react"
 import { 
   BarChart3, 
   Zap, 
-  Users2, 
-  Users, 
+  Users2,
   Settings, 
   HelpCircle, 
   LogOut,
@@ -37,7 +36,6 @@ const navItems = [
 const bottomNavItems = [
   { name: "Action Plan", icon: Zap, href: "/plan" },
   { name: "My Agents", icon: Users2, href: "/agents" },
-  { name: "Team", icon: Users, href: "/team" },
   { name: "Settings", icon: Settings, href: "/settings" },
 ]
 

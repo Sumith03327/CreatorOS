@@ -14,13 +14,12 @@
 import {
   Type,
   TrendingUp,
-  PenLine,
+  Library,
   Recycle,
   Search,
   CalendarDays,
   Image as ImageIcon,
   Mail,
-  BarChart3,
   FileVideo,
   GitCompareArrows,
   type LucideIcon,
@@ -34,12 +33,13 @@ export interface BuiltinAgent {
   icon: LucideIcon;
   gradient: string;
   /**
-   * 'CHAT'   — runs through the tool-calling chat loop (or its workspace, if it has one).
-   * 'STUDIO' — opens the Thumbnail Studio.
-   * 'TOOL'   — opens an existing full-page tool at `href`. These are the light-themed
-   *            dashboard tools that live in the Agent Hub rather than the sidebar.
+   * 'CHAT'    — runs through the tool-calling chat loop (or its workspace, if it has one).
+   * 'STUDIO'  — opens the Thumbnail Studio.
+   * 'SCRIPTS' — opens the Recent Scripts library.
+   * 'TOOL'    — opens an existing full-page tool at `href`. These are the light-themed
+   *             dashboard tools that live in the Agent Hub rather than the sidebar.
    */
-  action: 'CHAT' | 'STUDIO' | 'TOOL';
+  action: 'CHAT' | 'STUDIO' | 'SCRIPTS' | 'TOOL';
   /** Route this agent opens. Required for action: 'TOOL'. */
   href?: string;
   /** System prompt (only for CHAT agents). */
@@ -102,19 +102,13 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
     evidence: ['video', 'title'],
   },
   {
-    id: 'script-writer',
-    name: 'Script Writer',
+    id: 'recent-scripts',
+    name: 'Recent Scripts',
     category: 'Writing',
-    description: "Writes full video scripts in your channel's voice, with a strong hook and retention beats.",
-    icon: PenLine,
+    description: 'Browse, copy, and send every script you\'ve saved from Script & Analyses.',
+    icon: Library,
     gradient: 'from-violet-500 to-purple-600',
-    action: 'CHAT',
-    instructions:
-      'You are a Script Writer for a YouTube creator. Write complete, ready-to-record scripts. When a channel or reference video is provided, use get_youtube_channel and analyze_video_script/get_video_transcript to match their voice and pacing. ' +
-      'Structure every script as: HOOK (first 10-15s, high tension), SETUP, VALUE BEATS (with re-hooks to hold retention), and a clear CTA. Write in a natural spoken voice, not an essay. Ask for the topic, target length, and desired tone if missing.',
-    tools: ['get_video_transcript', 'analyze_video_script', 'search_youtube_videos', 'get_youtube_channel'],
-    skills: ['retention-structure', 'hook-writing'],
-    evidence: ['hook', 'video'],
+    action: 'SCRIPTS',
   },
   {
     id: 'repurposer',
@@ -200,20 +194,5 @@ export const BUILTIN_AGENTS: BuiltinAgent[] = [
     gradient: 'from-teal-500 to-emerald-600',
     action: 'TOOL',
     href: '/compare',
-  },
-  {
-    id: 'analytics-reporter',
-    name: 'Analytics Reporter',
-    category: 'Business',
-    description: 'Compiles a channel performance report and emails or posts it — a true long-running agent.',
-    icon: BarChart3,
-    gradient: 'from-indigo-500 to-violet-600',
-    action: 'CHAT',
-    instructions:
-      'You are an Analytics Reporter for a YouTube creator. Pull the channel\'s real numbers with get_youtube_channel and recent performance context, then compile a clear, concise performance report (subscribers, views, standout videos, momentum, and 2-3 recommendations). ' +
-      'You can DELIVER the report by emailing it via Gmail or posting it to Slack when asked. Before sending, show the report and confirm the recipient/channel. If the delivery app is not connected, tell the user to connect it in Connections.',
-    tools: ['get_youtube_channel', 'search_youtube_videos'],
-    skills: ['analytics-interpretation', 'channel-strategy'],
-    connectors: ['gmail', 'slack'],
   },
 ];
