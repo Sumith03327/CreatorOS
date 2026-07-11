@@ -3,18 +3,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Sparkles,
-  Plus,
   Bot,
-  FileText,
-  Lightbulb,
-  Wrench,
   Send,
   Loader2,
-  Trash2,
   ChevronLeft,
   Youtube,
-  Wand2,
   ArrowRight,
   Brain,
   Plug,
@@ -26,14 +19,11 @@ import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { ThumbnailStudio } from '@/components/agents/ThumbnailStudio';
 import { RecentScriptsLibrary } from '@/components/agents/RecentScriptsLibrary';
-import { draftAgent } from '@/ai/flows/draft-agent';
 import { updateAgentMemory } from '@/ai/flows/update-agent-memory';
 import * as store from '@/services/agent-store';
 import type { CustomAgent, ChatMessage } from '@/services/agent-store';
@@ -45,38 +35,8 @@ import type { ToolkitInfo } from '@/services/composio';
 
 // --- Types ---
 
-type View = 'LIST' | 'CREATE' | 'CHAT' | 'STUDIO' | 'SCRIPTS' | 'WORKSPACE';
+type View = 'LIST' | 'CHAT' | 'STUDIO' | 'SCRIPTS' | 'WORKSPACE';
 
-// --- Templates ---
-
-const TEMPLATES = [
-  {
-    icon: FileText,
-    category: 'Invoice Manager',
-    name: 'Invoice Manager',
-    description: 'Drafts and organizes invoices for brand deals and sponsorships.',
-    instructions:
-      "You are an Invoice Manager assistant for a YouTube creator's business. Help draft professional, itemized invoices for brand deals, sponsorships, and freelance work. When given a client name, work description, rate, and quantity/hours, produce a clean invoice with line items, subtotal, tax (ask if applicable), and total. Ask clarifying questions if key billing details are missing. Keep the tone professional and concise.",
-    useYouTubeContext: false,
-  },
-  {
-    icon: Lightbulb,
-    category: 'Content Ideas',
-    name: 'Content Idea Bot',
-    description: 'Brainstorms new video ideas based on a channel or video.',
-    instructions:
-      "You are a Content Strategy assistant for YouTube creators. Given a channel's niche, a recent video, or YouTube context, brainstorm 5 new video ideas that build on what's working. For each idea, briefly explain why it fits the audience and suggest a hook angle for the opening 10 seconds.",
-    useYouTubeContext: true,
-  },
-  {
-    icon: Wrench,
-    category: 'Custom',
-    name: '',
-    description: '',
-    instructions: '',
-    useYouTubeContext: false,
-  },
-];
 
 // --- Lightweight markdown renderer (bold, headings, bullet/numbered lists) ---
 // Avoids a dependency; handles the subset the models actually emit.
@@ -140,7 +100,6 @@ export default function AgentsPage() {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [view, setView] = useState<View>('LIST');
-  const [agents, setAgents] = useState<CustomAgent[]>([]);
   const [activeAgent, setActiveAgent] = useState<CustomAgent | null>(null);
   /** The built-in agent currently open in its dedicated workspace. */
   const [workspaceAgent, setWorkspaceAgent] = useState<BuiltinAgent | null>(null);
@@ -149,16 +108,7 @@ export default function AgentsPage() {
   /** Seed text for a workspace opened via deep link (e.g. an Action Plan idea). */
   const [workspaceTitle, setWorkspaceTitle] = useState<string | undefined>(undefined);
 
-  // Create form state
-  const [formName, setFormName] = useState('');
-  const [formCategory, setFormCategory] = useState('Custom');
-  const [formDescription, setFormDescription] = useState('');
-  const [formInstructions, setFormInstructions] = useState('');
-  const [formUseYouTube, setFormUseYouTube] = useState(false);
 
-  // Hero "describe an agent" state
-  const [heroInput, setHeroInput] = useState('');
-  const [drafting, setDrafting] = useState(false);
 
   // Connections (Composio) state
   const [connectorsEnabled, setConnectorsEnabled] = useState(false);
@@ -203,7 +153,6 @@ export default function AgentsPage() {
         setView('WORKSPACE');
       }
     }
-    store.listAgents().then(setAgents);
     // Load connector catalog + current connection statuses.
     getConnectorCatalog()
       .then(({ enabled, connectors }) => {
@@ -262,44 +211,8 @@ export default function AgentsPage() {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  function resetForm() {
-    setFormName('');
-    setFormCategory('Custom');
-    setFormDescription('');
-    setFormInstructions('');
-    setFormUseYouTube(false);
-  }
 
-  function applyTemplate(t: (typeof TEMPLATES)[number]) {
-    setFormName(t.name);
-    setFormCategory(t.category);
-    setFormDescription(t.description);
-    setFormInstructions(t.instructions);
-    setFormUseYouTube(t.useYouTubeContext);
-    setView('CREATE');
-  }
 
-  async function handleHeroDraft() {
-    const idea = heroInput.trim();
-    if (!idea || drafting) return;
-    setDrafting(true);
-    try {
-      const draft = await draftAgent(idea);
-      setFormName(draft.name);
-      setFormCategory(draft.category || 'Custom');
-      setFormDescription(draft.description);
-      setFormInstructions(draft.instructions);
-      setFormUseYouTube(draft.useYouTubeContext);
-      setHeroInput('');
-      setView('CREATE');
-      toast({ title: 'Draft ready', description: 'Review and tweak your agent, then create it.' });
-    } catch (err) {
-      console.error(err);
-      toast({ variant: 'destructive', title: 'Could not draft agent', description: 'Try rephrasing your idea.' });
-    } finally {
-      setDrafting(false);
-    }
-  }
 
   async function openBuiltin(b: BuiltinAgent) {
     if (b.action === 'STUDIO') {
@@ -341,29 +254,7 @@ export default function AgentsPage() {
     openAgent(ephemeral);
   }
 
-  async function handleCreateAgent() {
-    if (!formName.trim() || !formInstructions.trim()) {
-      toast({ variant: 'destructive', title: 'Missing info', description: 'Give your agent a name and instructions.' });
-      return;
-    }
-    const newAgent = await store.createAgent({
-      name: formName.trim(),
-      category: formCategory,
-      description: formDescription.trim(),
-      instructions: formInstructions.trim(),
-      useYouTubeContext: formUseYouTube,
-    });
-    setAgents(await store.listAgents());
-    resetForm();
-    toast({ title: 'Agent created', description: `${newAgent.name} is ready to use.` });
-    openAgent(newAgent);
-  }
 
-  async function handleDeleteAgent(id: string) {
-    await store.deleteAgent(id);
-    setAgents(await store.listAgents());
-    toast({ title: 'Agent deleted' });
-  }
 
   async function openAgent(agent: CustomAgent) {
     // Load durable memory from its dedicated store (agent objects may not carry it).
@@ -385,7 +276,6 @@ export default function AgentsPage() {
       const updated = await updateAgentMemory({ existingMemory: agent.memory ?? '', messages: msgs });
       if (updated === (agent.memory ?? '')) return;
       await store.setAgentMemory(agent.id, updated);
-      setAgents((prev) => prev.map((a) => (a.id === agent.id ? { ...a, memory: updated } : a)));
       setActiveAgent((prev) => (prev && prev.id === agent.id ? { ...prev, memory: updated } : prev));
     } catch (e) {
       console.error('memory refresh failed (non-fatal):', e);
@@ -395,7 +285,6 @@ export default function AgentsPage() {
   async function handleClearMemory() {
     if (!activeAgent) return;
     await store.setAgentMemory(activeAgent.id, '');
-    setAgents((prev) => prev.map((a) => (a.id === activeAgent.id ? { ...a, memory: '' } : a)));
     setActiveAgent((prev) => (prev ? { ...prev, memory: '' } : prev));
     toast({ title: 'Memory cleared', description: `${activeAgent.name} forgot what it knew about you.` });
   }
@@ -499,7 +388,7 @@ export default function AgentsPage() {
       <main className="command-center relative flex-1 overflow-y-auto p-6 md:p-8">
         {view === 'LIST' && (
           <div className="relative z-10 max-w-6xl mx-auto space-y-12 animate-in fade-in">
-            {/* Hero — describe an agent to build */}
+            {/* Hero */}
             <section className="cc-card relative overflow-hidden p-8 md:p-10">
               <div className="cc-orb pointer-events-none absolute -top-24 -right-16 h-72 w-72 rounded-full" />
               <div className="relative space-y-5 max-w-2xl">
@@ -507,27 +396,14 @@ export default function AgentsPage() {
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 cc-dot" /> AGENT COMMAND CENTER
                 </div>
                 <h1 className="text-3xl md:text-[2.6rem] leading-[1.1] font-bold tracking-tight text-white">
-                  Build any agent,{' '}
+                  Agents that{' '}
                   <span className="bg-gradient-to-r from-violet-300 via-fuchsia-300 to-indigo-300 bg-clip-text text-transparent">
-                    just by describing it.
+                    act on your real work.
                   </span>
                 </h1>
                 <p className="text-slate-400 text-sm md:text-base max-w-xl">
-                  Describe what you need — we draft the agent, its instructions, and its skills. Give it tools and real-app connections, and it goes to work.
+                  Each one reads expert playbooks, grounds itself in your proven data, and works in an interface built for the job — then sends the result to your real apps.
                 </p>
-                <div className="flex flex-col sm:flex-row gap-2 rounded-2xl border border-white/10 bg-white/5 p-2 backdrop-blur focus-within:border-primary/50 transition-colors">
-                  <Input
-                    placeholder="e.g., an agent that reviews my titles for clickability"
-                    value={heroInput}
-                    onChange={(e) => setHeroInput(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter') handleHeroDraft(); }}
-                    className="border-none bg-transparent shadow-none focus-visible:ring-0 text-white placeholder:text-slate-500 flex-1 h-11"
-                  />
-                  <Button onClick={handleHeroDraft} disabled={drafting || !heroInput.trim()} className="h-11 gap-2 rounded-xl cc-glow">
-                    {drafting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-                    {drafting ? 'Drafting…' : 'Build with AI'}
-                  </Button>
-                </div>
               </div>
             </section>
 
@@ -677,58 +553,6 @@ export default function AgentsPage() {
               </section>
             )}
 
-            {/* Your agents */}
-            <section className="space-y-5">
-              <div className="flex items-center justify-between">
-                <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-400">
-                  <span className="h-3 w-0.5 rounded bg-fuchsia-400" /> Your Agents
-                </h3>
-                <Button variant="ghost" size="sm" onClick={() => { resetForm(); setView('CREATE'); }} className="gap-1.5 text-primary hover:text-violet-300 hover:bg-white/5">
-                  <Plus className="h-4 w-4" /> New agent
-                </Button>
-              </div>
-              {agents.length > 0 ? (
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-                  {agents.map((agent) => (
-                    <div key={agent.id} className="cc-card cc-card-hover p-6 group relative">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); handleDeleteAgent(agent.id); }}
-                        className="absolute top-3 right-3 h-8 w-8 rounded-full bg-white/5 text-slate-500 hover:text-destructive hover:bg-destructive/15 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                      <div className="h-12 w-12 rounded-2xl bg-primary/15 border border-primary/20 flex items-center justify-center">
-                        <Bot className="h-6 w-6 text-primary" />
-                      </div>
-                      <h4 className="mt-4 font-semibold text-white">{agent.name}</h4>
-                      <span className="mt-1 inline-block text-[10px] font-mono uppercase tracking-wider text-slate-500">{agent.category}</span>
-                      <p className="mt-2 text-xs text-slate-400 line-clamp-2 min-h-[2.5rem]">{agent.description || 'No description provided.'}</p>
-                      <Button variant="outline" className="w-full mt-2 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white" onClick={() => openAgent(agent)}>Chat</Button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="cc-card border-dashed p-10 text-center text-sm text-slate-500">
-                  No agents yet — describe one above, or start from a template.
-                </div>
-              )}
-            </section>
-
-            {/* Templates */}
-            <section className="space-y-5">
-              <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-slate-400">
-                <span className="h-3 w-0.5 rounded bg-slate-500" /> Quick Start Templates
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-5">
-                {TEMPLATES.map((t, i) => (
-                  <div key={i} className="cc-card cc-card-hover border-dashed p-6 cursor-pointer" onClick={() => applyTemplate(t)}>
-                    <div className="h-10 w-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center"><t.icon className="h-5 w-5 text-primary" /></div>
-                    <h4 className="mt-3 font-semibold text-white">{t.name || 'Custom Agent'}</h4>
-                    <p className="mt-1 text-xs text-slate-400">{t.description || 'Start from a blank agent.'}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
           </div>
         )}
 
@@ -745,55 +569,6 @@ export default function AgentsPage() {
           </div>
         )}
 
-        {view === 'CREATE' && (
-          <div className="relative z-10 max-w-2xl mx-auto space-y-8 py-4 animate-in fade-in">
-            <Button variant="ghost" className="gap-2 -ml-2 text-slate-300 hover:text-white hover:bg-white/5" onClick={() => setView('LIST')}><ChevronLeft className="h-4 w-4" /> Back</Button>
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight text-white">Build Your Agent</h1>
-              <p className="text-slate-400 mt-1">Define what this agent does. It's powered by the Mesh API.</p>
-            </div>
-
-            <div className="cc-card p-6 space-y-5">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="agent-name" className="text-slate-300">Agent Name</Label>
-                    <Input id="agent-name" placeholder="e.g., Invoice Manager" value={formName} onChange={(e) => setFormName(e.target.value)} className={CC_INPUT} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="agent-category" className="text-slate-300">Category</Label>
-                    <Input id="agent-category" placeholder="e.g., Finance, Design, Custom" value={formCategory} onChange={(e) => setFormCategory(e.target.value)} className={CC_INPUT} />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="agent-description" className="text-slate-300">Short Description</Label>
-                  <Input id="agent-description" placeholder="What does this agent help with?" value={formDescription} onChange={(e) => setFormDescription(e.target.value)} className={CC_INPUT} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="agent-instructions" className="text-slate-300">Instructions (System Prompt)</Label>
-                  <Textarea
-                    id="agent-instructions"
-                    placeholder="You are a... Help the user with... Always..."
-                    className={cn('min-h-[160px]', CC_INPUT)}
-                    value={formInstructions}
-                    onChange={(e) => setFormInstructions(e.target.value)}
-                  />
-                </div>
-                <div className="flex items-center justify-between p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <div className="flex items-center gap-3">
-                    <Youtube className="h-5 w-5 text-red-500" />
-                    <div>
-                      <p className="text-sm font-semibold text-slate-200">Enable YouTube Context</p>
-                      <p className="text-xs text-slate-400">Lets this agent pull a video or channel's data into the conversation.</p>
-                    </div>
-                  </div>
-                  <Switch checked={formUseYouTube} onCheckedChange={setFormUseYouTube} />
-                </div>
-                <Button className="w-full gap-2 cc-glow" onClick={handleCreateAgent}>
-                  <Sparkles className="h-4 w-4" /> Create Agent
-                </Button>
-            </div>
-          </div>
-        )}
 
         {view === 'CHAT' && activeAgent && (
           <div className="relative z-10 max-w-3xl mx-auto h-full flex flex-col py-2 animate-in fade-in">
