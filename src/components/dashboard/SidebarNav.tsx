@@ -57,7 +57,7 @@ export function SidebarNav() {
           <div className="h-8 w-8 bg-primary rounded-lg flex items-center justify-center">
             <Zap className="h-5 w-5 text-white fill-white" />
           </div>
-          <span className="font-headline font-bold text-xl tracking-tight text-white">Creator Hub</span>
+          <span className="font-headline font-bold text-xl tracking-tight text-white">CreatorOS</span>
           <Badge variant="secondary" className="bg-primary/20 text-primary border-none text-[10px] py-0 px-1.5 ml-1">PRO</Badge>
         </div>
 

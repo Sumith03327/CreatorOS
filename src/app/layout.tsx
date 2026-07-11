@@ -5,7 +5,7 @@ import { Toaster } from '@/components/ui/toaster';
 import { FirebaseProvider } from '@/firebase';
 
 export const metadata: Metadata = {
-  title: 'Creator Hub - Standalone Content Strategy',
+  title: 'CreatorOS — Agents that act on your real work',
   description: 'AI-powered content strategy for YouTube creators.',
 };
 

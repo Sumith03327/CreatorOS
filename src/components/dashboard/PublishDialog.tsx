@@ -68,7 +68,7 @@ export function PublishDialog({ children }: PublishDialogProps) {
             <div className="h-8 w-8 bg-primary/10 rounded-lg flex items-center justify-center">
               <Rocket className="h-5 w-5 text-primary" />
             </div>
-            <DialogTitle className="text-xl font-bold font-headline">Publish Creator Hub</DialogTitle>
+            <DialogTitle className="text-xl font-bold font-headline">Publish CreatorOS</DialogTitle>
           </div>
           <DialogDescription className="text-slate-500">
             Deploy your latest AI strategies and share your dashboard with the world.

@@ -23,7 +23,7 @@ const GenerateContentActionPlanOutputSchema = z.object({
 export type GenerateContentActionPlanOutput = z.infer<typeof GenerateContentActionPlanOutputSchema>;
 
 export async function generateContentActionPlan(input: GenerateContentActionPlanInput): Promise<GenerateContentActionPlanOutput> {
-  const systemPrompt = "You are an expert YouTube content strategist and AI assistant named Creator Hub. Always return valid JSON only.";
+  const systemPrompt = "You are an expert YouTube content strategist and AI assistant named CreatorOS. Always return valid JSON only.";
 
   const promptStr = `Here is a summary of the AI's analysis of the channel's performance, retention, and audience behavior:
 ${input.channelAnalysisSummary}
