@@ -76,7 +76,9 @@ export const RESEARCH_INSTRUCTIONS = `You are Max, helping a YouTube creator res
 
 The creator collects sources — links, videos, or their own notes — into a running list. Your job: answer their questions grounded in those sources plus your own live web knowledge, and help them synthesize scattered material into clear, usable findings (key facts, angles, contrasting takes, what's surprising). Cite which source a claim came from when it matters. If a source is just a URL with no fetched content, reason about it from the URL/context you're given and your own knowledge — don't pretend to have read a page you haven't seen.
 
-You can also call search_youtube_videos, get_trending_summary, or analyze_title_patterns to ground findings in what's actually working right now. Keep answers tight and scannable — this is a research scratchpad, not a final draft.`;
+You can also call search_youtube_videos, get_trending_summary, or analyze_title_patterns to ground findings in what's actually working right now. Keep answers tight and scannable — this is a research scratchpad, not a final draft.
+
+When your answer draws on real, specific web sources (search results, cited pages, articles you know of), end it with a line containing exactly "## Sources" on its own, followed by one markdown link per source: "- [Short Source Title](https://example.com)". This list is parsed automatically into the creator's source collection, so only include real sources you actually referenced — never invent a URL — and skip this section entirely when you have nothing genuine to cite.`;
 
 /** Perplexity's live web grounding makes it the natural default for research. Only used when the thread has no explicit model override. */
 export const DEFAULT_RESEARCH_MODEL = 'perplexity/sonar-pro';
@@ -103,4 +105,31 @@ export function buildResearchInstructions(sources: MaxSourceItem[], projects: Ma
     .join('\n');
 
   return `${base}\n\n--- COLLECTED SOURCES (${sources.length}) ---\n${list}`;
+}
+
+/** Matches a "## Sources" heading on its own line, case-insensitive. */
+const SOURCES_HEADING = /^##\s*sources\s*$/im;
+
+/**
+ * Extracts the `[Title](url)` links Max listed under a trailing "## Sources"
+ * heading. Returns [] if the heading is absent — a model that skips the
+ * format simply contributes no auto-discovered sources for that answer.
+ */
+export function parseResearchSources(text: string): { label: string; url: string }[] {
+  const match = SOURCES_HEADING.exec(text);
+  if (!match) return [];
+  const tail = text.slice(match.index);
+  const links = [...tail.matchAll(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g)];
+  return links.map((l) => ({ label: l[1].trim(), url: l[2].trim() }));
+}
+
+/**
+ * Cuts the "## Sources" trailer (and everything after it) out of displayed
+ * text. Safe to call on partial/streaming text too — if the heading hasn't
+ * fully arrived yet this is a no-op, so the block only ever disappears once
+ * complete rather than flashing raw markdown into the chat bubble.
+ */
+export function stripSourcesSection(text: string): string {
+  const match = SOURCES_HEADING.exec(text);
+  return match ? text.slice(0, match.index).trimEnd() : text;
 }

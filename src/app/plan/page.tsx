@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -19,7 +20,6 @@ import { fetchYouTubeChannelData, fetchChannelVideosPage, type YouTubeVideoData 
 import { getMyChannel, setMyChannel, patchMyChannel, clearMyChannel, subscribeToMyChannel, type MyChannel } from '@/lib/my-channel';
 import { computeMetrics, diagnose, buildBrief, ownWinners, BLIND_SPOTS, type Finding, type Severity } from '@/lib/channel-diagnosis';
 import { buildSlots, bestPublishSlot, shortsShareOf, slotTimeLabel } from '@/lib/content-calendar';
-import { ContentCalendar } from '@/components/plan/ContentCalendar';
 import { GoalCard } from '@/components/plan/GoalCard';
 import { PlanHistory } from '@/components/plan/PlanHistory';
 import {
@@ -28,6 +28,7 @@ import {
   type SavedPlan, type Goal,
 } from '@/lib/plan-store';
 import { listFormula } from '@/services/formula-store';
+import { setInbox } from '@/lib/title-projects';
 import { SendToMenu } from '@/components/agents/SendToMenu';
 import { formatNumber } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -55,6 +56,7 @@ function planDeliverable(result: GenerateContentActionPlanOutput) {
 }
 
 export default function PlanPage() {
+  const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [channel, setChannel] = useState<MyChannel | null>(null);
   const [videos, setVideos] = useState<YouTubeVideoData[]>([]);
@@ -72,6 +74,9 @@ export default function PlanPage() {
   // Persistence — the plan, the calendar and the goal all survive navigation.
   const [plans, setPlans] = useState<SavedPlan[]>([]);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
+  /** Mirrors activePlanId synchronously — `persist` runs across separate events
+   *  and cannot wait for a re-render to learn which record is open. */
+  const activePlanRef = useRef<string | null>(null);
   const [goal, setGoalState] = useState<Goal | null>(null);
   /** Proven titles/hooks the creator curated — grounds the ideas (#8). */
   const [formula, setFormula] = useState<string[]>([]);
@@ -85,7 +90,7 @@ export default function PlanPage() {
   /** Restore the last session for this channel, so leaving the page costs nothing. */
   useEffect(() => {
     if (!channel) {
-      setPlans([]); setActivePlanId(null); setGoalState(null);
+      setPlans([]); activePlanRef.current = null; setActivePlanId(null); setGoalState(null);
       return;
     }
     const mine = listPlans(channel.id);
@@ -94,6 +99,7 @@ export default function PlanPage() {
 
     const last = latestPlan(channel.id);
     if (last) {
+      activePlanRef.current = last.id;
       setActivePlanId(last.id);
       if (last.actionPlan) setResult(last.actionPlan);
       if (last.calendar) setCalendar(last.calendar);
@@ -179,6 +185,7 @@ export default function PlanPage() {
     setVideos([]);
     setResult(null);
     setCalendar(null);
+    activePlanRef.current = null;
     setActivePlanId(null);
   }
 
@@ -194,23 +201,25 @@ export default function PlanPage() {
 
   /**
    * Every generation belongs to a saved plan. Reuse the open one so the action
-   * plan and the calendar land on the same record rather than forking history.
+   * plan and the calendar land on the SAME record rather than forking history.
+   *
+   * This reads the id from a ref and the existing plans straight from storage,
+   * never from React state: "generate plan" and "plan the month" are two separate
+   * events, and a stale `plans` snapshot between them silently forked the record
+   * in half — the action plan on one, the calendar on another.
    */
   function persist(patch: Partial<Omit<SavedPlan, 'id' | 'createdAt'>>) {
     if (!channel || !metrics) return;
-    if (activePlanId && plans.some((p) => p.id === activePlanId)) {
-      const updated = updatePlan(activePlanId, patch);
-      if (updated) setPlans(listPlans(channel.id));
-      return;
+    const openId = activePlanRef.current;
+    const onDisk = listPlans(channel.id);
+
+    if (openId && onDisk.some((p) => p.id === openId)) {
+      updatePlan(openId, patch);
+    } else {
+      const created = savePlan({ channelId: channel.id, metrics, findings, brief, ...patch });
+      activePlanRef.current = created.id;
+      setActivePlanId(created.id);
     }
-    const created = savePlan({
-      channelId: channel.id,
-      metrics,
-      findings,
-      brief,
-      ...patch,
-    });
-    setActivePlanId(created.id);
     setPlans(listPlans(channel.id));
   }
 
@@ -245,7 +254,7 @@ export default function PlanPage() {
     return { slots, best };
   }, [metrics, videos]);
 
-  async function generateCalendar() {
+  async function generateCalendar(ideas?: string[]) {
     if (!brief || !slotPreview?.slots.length) return;
     setCalendaring(true);
     setError(null);
@@ -254,9 +263,13 @@ export default function PlanPage() {
         brief,
         niche: channel?.niche,
         slots: slotPreview.slots,
+        ideas,
       });
       setCalendar(cal);
       persist({ calendar: cal });
+      // The Content Calendar agent OWNS the schedule — this page diagnoses and
+      // generates, then hands off to where it's edited, saved and shipped.
+      router.push('/agents?agent=calendar-planner');
     } catch (e: any) {
       setError(e?.message || 'Could not build the calendar. Try again.');
     } finally {
@@ -264,7 +277,24 @@ export default function PlanPage() {
     }
   }
 
+  /**
+   * Hand the whole batch of ideas to the Title & Hook Doctor. Ten titles through
+   * a URL would be unreadable, so they go via the inbox and we just redirect.
+   */
+  function sendIdeasToDoctor() {
+    if (!result?.contentIdeas.length) return;
+    setInbox(result.contentIdeas);
+    router.push('/agents?agent=title-doctor');
+  }
+
+  /** Schedule the creator's OWN ideas rather than letting the model invent titles. */
+  function scheduleIdeas() {
+    if (!result?.contentIdeas.length) return;
+    generateCalendar(result.contentIdeas);
+  }
+
   function openPlan(plan: SavedPlan) {
+    activePlanRef.current = plan.id;
     setActivePlanId(plan.id);
     setResult(plan.actionPlan ?? null);
     setCalendar(plan.calendar ?? null);
@@ -275,6 +305,7 @@ export default function PlanPage() {
     if (!channel) return;
     setPlans(listPlans(channel.id));
     if (activePlanId === id) {
+      activePlanRef.current = null;
       setActivePlanId(null);
       setResult(null);
       setCalendar(null);
@@ -376,7 +407,7 @@ export default function PlanPage() {
                       {planning ? 'Building your plan…' : 'Generate action plan'}
                     </Button>
                     <Button
-                      onClick={generateCalendar}
+                      onClick={() => generateCalendar()}
                       disabled={calendaring || !slotPreview?.slots.length}
                       variant="outline"
                       size="lg"
@@ -404,10 +435,29 @@ export default function PlanPage() {
             </>
           )}
 
-          {calendar && channel && (
-            <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
-              <ContentCalendar uploads={calendar} channelTitle={channel.title} />
-            </div>
+          {/* The calendar itself lives in the Content Calendar agent — this page
+              generates it and points there, rather than keeping a second copy. */}
+          {calendar && calendar.length > 0 && channel && (
+            <Card className="border-none shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <CardContent className="flex flex-wrap items-center justify-between gap-3 p-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+                    <CalendarDays className="h-5 w-5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold">{calendar.length} uploads scheduled</p>
+                    <p className="text-xs text-muted-foreground">
+                      Edit, save and ship it in the Content Calendar.
+                    </p>
+                  </div>
+                </div>
+                <Button asChild size="sm" className="gap-1.5">
+                  <Link href="/agents?agent=calendar-planner">
+                    Open Content Calendar <ArrowRight className="h-3.5 w-3.5" />
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
           )}
 
           {/* #9 — past plans, and whether the creator actually shipped them. */}
@@ -451,13 +501,41 @@ export default function PlanPage() {
                     <h3 className="flex items-center gap-2 font-bold">
                       <Lightbulb className="h-5 w-5 text-amber-500" /> Content Ideas
                     </h3>
+
+                    {/* Bulk hand-off — ideas are only worth generating if they can
+                        leave this page and become work. */}
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" variant="outline" className="gap-1.5 text-xs" onClick={sendIdeasToDoctor}>
+                        <Stethoscope className="h-3.5 w-3.5" />
+                        Send all {result.contentIdeas.length} to Title Doctor
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 text-xs"
+                        onClick={scheduleIdeas}
+                        disabled={calendaring || !slotPreview?.slots.length}
+                      >
+                        {calendaring ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CalendarDays className="h-3.5 w-3.5" />}
+                        Schedule these
+                      </Button>
+                    </div>
+                    {/* The arrow has to earn itself: each idea is already phrased as a
+                        title, so clicking one opens the Title & Hook Doctor with it
+                        loaded, ready to score and rewrite. */}
                     <ul className="space-y-2.5">
                       {result.contentIdeas.map((idea, i) => (
                         <li key={i}>
-                          <div className="flex items-center justify-between gap-2 rounded-lg border p-3 transition-all hover:border-primary/30 hover:bg-primary/5">
+                          <Link
+                            href={`/agents?agent=title-doctor&title=${encodeURIComponent(idea)}`}
+                            className="group flex items-center justify-between gap-2 rounded-lg border p-3 transition-all hover:border-primary/40 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                          >
                             <p className="text-sm font-semibold text-foreground">{idea}</p>
-                            <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground/40" />
-                          </div>
+                            <span className="flex shrink-0 items-center gap-1 text-micro font-semibold text-muted-foreground/50 transition-colors group-hover:text-primary">
+                              <span className="hidden sm:inline opacity-0 transition-opacity group-hover:opacity-100">Score it</span>
+                              <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+                            </span>
+                          </Link>
                         </li>
                       ))}
                     </ul>

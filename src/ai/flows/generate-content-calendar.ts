@@ -36,6 +36,12 @@ export interface GenerateCalendarInput {
   slots: PlanSlot[];
   /** Title patterns proven in this niche, if the creator has any. */
   titleFormulas?: string[];
+  /**
+   * Ideas the creator has already chosen. When present the model must SCHEDULE
+   * these rather than invent its own — a creator who picked their topics should
+   * not have them quietly replaced.
+   */
+  ideas?: string[];
 }
 
 export async function generateContentCalendar(input: GenerateCalendarInput): Promise<PlannedUpload[]> {
@@ -50,11 +56,23 @@ export async function generateContentCalendar(input: GenerateCalendarInput): Pro
     'You are a YouTube content strategist. You plan what a creator should publish, grounded in their real numbers. ' +
     'Never invent dates — the schedule is already fixed and given to you. Always return valid JSON only.';
 
+  // When the creator brought their own ideas, the model's job changes from
+  // "invent topics" to "schedule these well" — a much narrower, safer job.
+  const chosen = input.ideas?.filter(Boolean) ?? [];
+  const ideaBlock = chosen.length
+    ? `\nThe creator has ALREADY CHOSEN these ideas. Schedule THESE — do not invent replacements:\n${chosen
+        .map((t, i) => `${i + 1}. ${t}`)
+        .join('\n')}\n` +
+      `Assign them across the slots. Keep each title essentially as written (you may tighten wording, never change the topic). ` +
+      `If there are more slots than ideas, you may add extras that fit the channel — mark those clearly by making them obviously on-theme. ` +
+      `If there are more ideas than slots, schedule the strongest ones and drop the rest.\n`
+    : '';
+
   const prompt = `Here is the measured state of the channel:
 ${input.brief}
 ${input.niche ? `\nNiche: ${input.niche}` : ''}
 ${input.titleFormulas?.length ? `\nTitle patterns already winning in this niche:\n${input.titleFormulas.map((f) => `- ${f}`).join('\n')}` : ''}
-
+${ideaBlock}
 The publishing schedule is ALREADY DECIDED. Do not change it, and do not output dates.
 Fill each slot below with what to make:
 

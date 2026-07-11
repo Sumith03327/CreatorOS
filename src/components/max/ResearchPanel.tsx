@@ -2,26 +2,32 @@
 
 /**
  * The Research tab — a notebook for collecting resources (links, videos,
- * notes) and running web-grounded Q&A over them (Perplexity by default),
- * then saving the collection as a reusable Project. Kept as its own
- * scratchpad (thread.sources / thread.researchMessages) separate from the
- * Write tab's script conversation.
+ * notes) and running web-grounded Q&A over them (Perplexity by default).
+ * The attached project (auto-created on first activity if none is picked —
+ * see page.tsx's ensureResearchProject) is the live autosave target: every
+ * source here, manual or auto-discovered from Max's own citations, and the
+ * running research conversation are mirrored into it automatically. There
+ * is no manual "save" step.
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Link2, Loader2, Notebook, Plus, Save, Send, StickyNote, Trash2, Youtube } from 'lucide-react';
+import { Link2, Loader2, Notebook, Plus, Send, StickyNote, Trash2, Youtube } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { cn } from '@/lib/utils';
 import { toast } from '@/hooks/use-toast';
 import { RichText } from '@/components/max/RichText';
 import { ComposerToolbar } from '@/components/max/ComposerToolbar';
-import { streamMaxReply } from '@/services/max-chat-client';
-import { DEFAULT_RESEARCH_MODEL, RESEARCH_TOOLS, buildResearchInstructions } from '@/ai/agents/max-prompt';
-import * as maxStore from '@/services/max-store';
+import { askMax, isPerplexityModel, streamMaxReply } from '@/services/max-chat-client';
+import {
+  DEFAULT_RESEARCH_MODEL,
+  RESEARCH_TOOLS,
+  buildResearchInstructions,
+  parseResearchSources,
+  stripSourcesSection,
+} from '@/ai/agents/max-prompt';
 import type { MaxChatMessage, MaxProject, MaxSourceItem, MaxSourceKind, MaxThread } from '@/services/max-store';
 
 const KIND_ICON: Record<MaxSourceKind, typeof Link2> = { url: Link2, video: Youtube, note: StickyNote };
@@ -41,25 +47,31 @@ export function ResearchPanel({
   onAddSource,
   onRemoveSource,
   onResearchExchange,
-  onProjectCreated,
 }: {
   thread: MaxThread;
   projects: MaxProject[];
   onModelChange: (model: string | undefined) => void;
   onProjectIdsChange: (ids: string[]) => void;
+  /** Adds one manually-pasted source — page.tsx ensures/syncs the project. */
   onAddSource: (source: { kind: MaxSourceKind; label: string; value: string }) => void;
   onRemoveSource: (sourceId: string) => void;
-  onResearchExchange: (messages: MaxChatMessage[]) => void;
-  onProjectCreated: (project: MaxProject) => void;
+  /**
+   * page.tsx ensures/syncs the project and persists the exchange, plus any
+   * sources Max cited in this answer — passed together so they're written
+   * sequentially, not as two racing concurrent calls. Awaited (not
+   * fire-and-forget) so `sending` only clears once the project/sources sync
+   * has actually landed — see the same fix in MaxChat.tsx.
+   */
+  onResearchExchange: (
+    messages: MaxChatMessage[],
+    citedSources: { kind: MaxSourceKind; label: string; value: string }[]
+  ) => Promise<void>;
 }) {
   const [sourceInput, setSourceInput] = useState('');
   const [messages, setMessages] = useState<MaxChatMessage[]>(thread.researchMessages);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [statusText, setStatusText] = useState('');
-  const [saveOpen, setSaveOpen] = useState(false);
-  const [projectName, setProjectName] = useState('');
-  const [saving, setSaving] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,6 +82,9 @@ export function ResearchPanel({
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, statusText]);
 
+  const attachedProjects = projects.filter((p) => thread.projectIds.includes(p.id));
+  const syncTarget = attachedProjects[0] ?? null;
+
   function addSource() {
     const value = sourceInput.trim();
     if (!value) return;
@@ -78,8 +93,6 @@ export function ResearchPanel({
     onAddSource({ kind, label, value });
     setSourceInput('');
   }
-
-  const attachedProjects = projects.filter((p) => thread.projectIds.includes(p.id));
 
   async function sendMessage() {
     if (!input.trim() || sending) return;
@@ -92,29 +105,62 @@ export function ResearchPanel({
     setSending(true);
     setStatusText('Researching…');
 
-    let streamed = '';
-    let gotText = false;
+    const effectiveModel = thread.model ?? DEFAULT_RESEARCH_MODEL;
+    const history = priorHistory.map((m) => ({ role: m.role, content: m.content }));
+    const instructions = buildResearchInstructions(thread.sources, attachedProjects);
+    const existingUrls = new Set(thread.sources.map((s) => s.value));
+    const dedupe = (candidates: { label: string; url: string }[]) => {
+      const out: { kind: MaxSourceKind; label: string; value: string }[] = [];
+      for (const c of candidates) {
+        if (existingUrls.has(c.url)) continue;
+        existingUrls.add(c.url);
+        out.push({ kind: 'url', label: c.label, value: c.url });
+      }
+      return out;
+    };
 
     try {
-      const assistant = await streamMaxReply({
-        instructions: buildResearchInstructions(thread.sources, attachedProjects),
-        history: priorHistory.map((m) => ({ role: m.role, content: m.content })),
-        userMessage: userMsg.content,
-        model: thread.model ?? DEFAULT_RESEARCH_MODEL,
-        tools: RESEARCH_TOOLS,
-        onStatus: setStatusText,
-        onDelta: (delta) => {
-          if (!gotText) {
-            gotText = true;
-            setStatusText('');
-          }
-          streamed += delta;
-          setMessages([...nextMessages, { role: 'assistant', content: streamed, createdAt: new Date().toISOString() }]);
-        },
-      });
-      const assistantMsg: MaxChatMessage = { role: 'assistant', content: assistant, createdAt: new Date().toISOString() };
+      let clean: string;
+      let citedSources: { kind: MaxSourceKind; label: string; value: string }[];
+
+      if (isPerplexityModel(effectiveModel)) {
+        // Non-streaming: trades live typing for real, complete citations read
+        // off Mesh's structured response, instead of hoping the model
+        // remembers to format a source list into its own answer text.
+        const { content, citations } = await askMax({ instructions, history, userMessage: userMsg.content, model: effectiveModel });
+        clean = content;
+        citedSources = dedupe(citations.map((c) => ({ label: c.title, url: c.url })));
+      } else {
+        let streamed = '';
+        let gotText = false;
+        const raw = await streamMaxReply({
+          instructions,
+          history,
+          userMessage: userMsg.content,
+          model: effectiveModel,
+          tools: RESEARCH_TOOLS,
+          onStatus: setStatusText,
+          onDelta: (delta) => {
+            if (!gotText) {
+              gotText = true;
+              setStatusText('');
+            }
+            streamed += delta;
+            const preview = stripSourcesSection(streamed);
+            setMessages([...nextMessages, { role: 'assistant', content: preview, createdAt: new Date().toISOString() }]);
+          },
+        });
+        clean = stripSourcesSection(raw);
+        citedSources = dedupe(parseResearchSources(raw));
+      }
+
+      const assistantMsg: MaxChatMessage = { role: 'assistant', content: clean, createdAt: new Date().toISOString() };
       setMessages([...nextMessages, assistantMsg]);
-      onResearchExchange([userMsg, assistantMsg]);
+
+      // Both go through this one call so page.tsx can persist them
+      // sequentially (add sources, then append the exchange) rather than as
+      // two independent concurrent writes racing on the same thread record.
+      await onResearchExchange([userMsg, assistantMsg], citedSources);
     } catch (err) {
       console.error(err);
       toast({ variant: 'destructive', title: 'Research failed', description: 'Check your Mesh API key and try again.' });
@@ -122,44 +168,6 @@ export function ResearchPanel({
     } finally {
       setSending(false);
       setStatusText('');
-    }
-  }
-
-  async function saveAsProject() {
-    if (!projectName.trim()) {
-      toast({ variant: 'destructive', title: 'Name your project' });
-      return;
-    }
-    if (!thread.sources.length && !messages.some((m) => m.role === 'assistant')) {
-      toast({ variant: 'destructive', title: 'Nothing to save yet', description: 'Add a source or ask a question first.' });
-      return;
-    }
-    setSaving(true);
-    try {
-      const created = await maxStore.createProject({ name: projectName.trim() });
-      for (const s of thread.sources) {
-        await maxStore.addProjectFile(created.id, {
-          name: s.label,
-          kind: 'reference',
-          content: `[${s.kind}] ${s.value}`,
-        });
-      }
-      const notes = messages
-        .filter((m) => m.role === 'assistant')
-        .map((m) => m.content)
-        .join('\n\n---\n\n');
-      if (notes.trim()) {
-        await maxStore.addProjectFile(created.id, { name: 'Research Notes', kind: 'reference', content: notes });
-      }
-      const final = (await maxStore.getProject(created.id)) ?? created;
-      onProjectCreated(final);
-      setSaveOpen(false);
-      setProjectName('');
-      toast({ title: 'Saved as project', description: `${final.name} is ready to use in Write.` });
-    } catch (e: any) {
-      toast({ variant: 'destructive', title: 'Could not save project', description: e?.message });
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -173,29 +181,16 @@ export function ResearchPanel({
               <Notebook className="h-3.5 w-3.5" />
               Sources ({thread.sources.length})
             </span>
-            <Popover open={saveOpen} onOpenChange={setSaveOpen}>
-              <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm" className="h-6 gap-1 px-2 text-primary hover:bg-primary/10 hover:text-primary">
-                  <Save className="h-3 w-3" />
-                  Save
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-72 p-3 bg-[#15132a] border-white/10 text-slate-200 space-y-2">
-                <p className="text-xs text-slate-400">Save these sources and research notes as a reusable project.</p>
-                <Input
-                  autoFocus
-                  placeholder="Project name"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  className="bg-white/5 border-white/10 text-white placeholder:text-slate-500"
-                />
-                <Button onClick={saveAsProject} disabled={saving} className="w-full cc-glow">
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                  Create project
-                </Button>
-              </PopoverContent>
-            </Popover>
           </div>
+          <p className="text-micro text-slate-500">
+            {syncTarget ? (
+              <>
+                Autosaving to <span className="text-primary font-medium">{syncTarget.name}</span>
+              </>
+            ) : (
+              'A project will be created automatically on your first question.'
+            )}
+          </p>
           <div className="flex items-center gap-1.5">
             <Input
               placeholder="Paste a link, video URL, or note…"
@@ -218,7 +213,7 @@ export function ResearchPanel({
           <div className="p-3 space-y-1.5">
             {thread.sources.length === 0 && (
               <div className="px-2 py-6 text-center text-xs text-slate-500">
-                Collect links, videos, or notes here — Max will research across all of them.
+                Collect links, videos, or notes here — Max will research across all of them, and add his own sources too.
               </div>
             )}
             {thread.sources.map((s) => {
@@ -247,7 +242,7 @@ export function ResearchPanel({
             {messages.length === 0 && (
               <div className="text-center py-16">
                 <p className="text-slate-400 text-sm">
-                  Add a few sources on the left, then ask Max to find patterns, summarize, or compare them.
+                  Ask about a topic, or add a few sources on the left first — Max will find patterns, summarize, or compare them.
                 </p>
               </div>
             )}

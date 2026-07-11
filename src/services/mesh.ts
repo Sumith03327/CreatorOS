@@ -297,3 +297,56 @@ export async function* streamMeshChat(
     }
   }
 }
+
+export interface MeshCitation {
+  title: string;
+  url: string;
+}
+
+/**
+ * Non-streaming call that also surfaces real citations. Mesh strips
+ * Perplexity's top-level `citations` array but preserves the sources in
+ * `message.annotations` as `url_citation` objects — this only exists on the
+ * non-streaming response shape (confirmed: a raw `stream: true` call to the
+ * same model carries no annotations in any chunk). Used by Research instead
+ * of `streamMeshChat` specifically to get accurate sources rather than
+ * relying on the model to format them into the answer text itself.
+ */
+export async function callMeshWithCitations(
+  messages: MeshMessage[],
+  model?: string
+): Promise<{ content: string; citations: MeshCitation[] }> {
+  const apiKey = getMeshKey();
+
+  const response = await fetch(MESH_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || DEFAULT_MODEL,
+      messages,
+      temperature: 0.7,
+      max_tokens: 2000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Mesh API error:', errorText);
+    throw new Error(`Mesh API error: ${response.status} ${response.statusText}`);
+  }
+
+  const data = await response.json();
+  const message = data.choices?.[0]?.message ?? {};
+  const annotations = Array.isArray(message.annotations) ? message.annotations : [];
+  const citations: MeshCitation[] = annotations
+    .filter((a: any) => a?.type === 'url_citation' && a?.url_citation?.url)
+    .map((a: any) => ({
+      title: String(a.url_citation.title || a.url_citation.url),
+      url: String(a.url_citation.url),
+    }));
+
+  return { content: message.content ?? '', citations };
+}

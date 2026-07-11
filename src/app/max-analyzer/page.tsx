@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Sparkles } from 'lucide-react';
 import { SidebarNav } from '@/components/dashboard/SidebarNav';
 import { MaxSidebar } from '@/components/max/MaxSidebar';
@@ -24,12 +24,28 @@ export default function MaxAnalyzerPage() {
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<MaxProject | null>(null);
 
+  /**
+   * A research answer can cite several sources in one go — onAddSource fires
+   * once per citation, synchronously, before any of the resulting state
+   * updates land. Without this guard each of those calls would see the same
+   * stale "no project attached" snapshot and create a duplicate project.
+   * Keyed by thread id so concurrent threads never block each other.
+   */
+  const creatingProjectRef = useRef<Record<string, Promise<string>>>({});
+
   useEffect(() => {
     (async () => {
       const [t, p] = await Promise.all([maxStore.listThreads(), maxStore.listProjects()]);
       setThreads(t);
       setProjects(p);
-      if (t.length > 0) {
+      // Deep link from Recent Scripts ("Open in Script & Analyses"): ?thread=<id>.
+      // Read from location rather than useSearchParams — same reasoning as
+      // agents/page.tsx, avoids opting this route out of prerendering.
+      const requestedThreadId = new URLSearchParams(window.location.search).get('thread');
+      const requested = requestedThreadId ? t.find((thr) => thr.id === requestedThreadId) : undefined;
+      if (requested) {
+        setActiveThreadId(requested.id);
+      } else if (t.length > 0) {
         setActiveThreadId(t[0].id);
       } else {
         const created = await maxStore.createThread({});
@@ -84,9 +100,49 @@ export default function MaxAnalyzerPage() {
     if (updated) setThreads((prev) => [updated, ...prev.filter((t) => t.id !== updated.id)]);
   }
 
+  async function refreshProject(projectId: string) {
+    const fresh = await maxStore.getProject(projectId);
+    if (fresh) setProjects((prev) => prev.map((p) => (p.id === projectId ? fresh : p)));
+  }
+
+  /**
+   * In Research, the first attached project is always the live autosave
+   * target. If none is attached yet, this creates one (named from whatever
+   * triggered it — the first question or the first pasted source) and
+   * attaches it, so every subsequent source/answer has somewhere to land.
+   * Re-reads persisted state (not the possibly-stale `thread` param) and
+   * de-dupes concurrent callers via `creatingProjectRef` — see its comment.
+   */
+  async function ensureResearchProject(thread: MaxThread, seed: string): Promise<string> {
+    const inFlight = creatingProjectRef.current[thread.id];
+    if (inFlight) return inFlight;
+
+    const work = (async () => {
+      const current = await maxStore.getThread(thread.id);
+      if (current && current.projectIds.length > 0) return current.projectIds[0];
+
+      const name = seed.trim().slice(0, 60) || `Research — ${new Date().toLocaleDateString()}`;
+      const project = await maxStore.createProject({ name });
+      setProjects((prev) => [project, ...prev]);
+      applyThreadUpdate(await maxStore.updateThread(thread.id, { projectIds: [project.id] }));
+      toast({ title: 'Started a new project', description: `${project.name} — your research saves here automatically.` });
+      return project.id;
+    })();
+
+    creatingProjectRef.current[thread.id] = work;
+    try {
+      return await work;
+    } finally {
+      delete creatingProjectRef.current[thread.id];
+    }
+  }
+
   async function handleAddSource(source: { kind: MaxSourceKind; label: string; value: string }) {
     if (!activeThread) return;
+    const projectId = await ensureResearchProject(activeThread, source.label);
     applyThreadUpdate(await maxStore.addSource(activeThread.id, source));
+    await maxStore.upsertProjectFile(projectId, { name: source.label, kind: 'reference', content: `[${source.kind}] ${source.value}` });
+    await refreshProject(projectId);
   }
 
   async function handleRemoveSource(sourceId: string) {
@@ -94,17 +150,39 @@ export default function MaxAnalyzerPage() {
     applyThreadUpdate(await maxStore.removeSource(activeThread.id, sourceId));
   }
 
-  async function handleResearchExchange(messages: MaxChatMessage[]) {
+  /**
+   * Persists a completed research exchange plus any sources Max cited in
+   * it. Everything here runs as one sequential await chain — never two
+   * independent concurrent handlers mutating the same thread record — so
+   * there's no read-modify-write race between adding sources and appending
+   * the conversation (each storage call re-reads fresh state, but only
+   * because the previous call in this chain has already fully committed).
+   */
+  async function handleResearchExchange(
+    messages: MaxChatMessage[],
+    citedSources: { kind: MaxSourceKind; label: string; value: string }[]
+  ) {
     if (!activeThread) return;
-    applyThreadUpdate(await maxStore.appendResearchMessages(activeThread.id, messages));
-  }
+    const seed = messages.find((m) => m.role === 'user')?.content ?? citedSources[0]?.label ?? '';
+    const projectId = await ensureResearchProject(activeThread, seed);
 
-  async function handleProjectCreatedFromResearch(project: MaxProject) {
-    setProjects((prev) => [project, ...prev]);
-    if (!activeThread) return;
-    // Auto-attach so Write can draft against it immediately — the
-    // "collect -> save -> chat with that project" loop.
-    applyThreadUpdate(await maxStore.updateThread(activeThread.id, { projectIds: [...activeThread.projectIds, project.id] }));
+    if (citedSources.length) {
+      applyThreadUpdate(await maxStore.addSources(activeThread.id, citedSources));
+      for (const s of citedSources) {
+        await maxStore.upsertProjectFile(projectId, { name: s.label, kind: 'reference', content: `[${s.kind}] ${s.value}` });
+      }
+    }
+
+    const updated = await maxStore.appendResearchMessages(activeThread.id, messages);
+    applyThreadUpdate(updated);
+    const notes = (updated?.researchMessages ?? [])
+      .filter((m) => m.role === 'assistant')
+      .map((m) => m.content)
+      .join('\n\n---\n\n');
+    if (notes.trim()) {
+      await maxStore.upsertProjectFile(projectId, { name: 'Research Notes', kind: 'reference', content: notes });
+    }
+    await refreshProject(projectId);
   }
 
   function handleNewProject() {
@@ -199,7 +277,6 @@ export default function MaxAnalyzerPage() {
                 onAddSource={handleAddSource}
                 onRemoveSource={handleRemoveSource}
                 onResearchExchange={handleResearchExchange}
-                onProjectCreated={handleProjectCreatedFromResearch}
               />
             )}
           </div>

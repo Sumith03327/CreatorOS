@@ -12,6 +12,7 @@ import { TrendScoutWorkspace } from './TrendScoutWorkspace';
 import { SeoOptimizerWorkspace } from './SeoOptimizerWorkspace';
 import { SponsorshipWorkspace } from './SponsorshipWorkspace';
 import { RepurposerWorkspace } from './RepurposerWorkspace';
+import { CalendarWorkspace } from './CalendarWorkspace';
 
 /** Agent ids that have a dedicated workspace. */
 export const WORKSPACE_IDS = new Set<string>([
@@ -20,16 +21,26 @@ export const WORKSPACE_IDS = new Set<string>([
   'seo-optimizer',
   'sponsorship-manager',
   'repurposer',
+  'calendar-planner',
 ]);
 
 export function hasWorkspace(id: string): boolean {
   return WORKSPACE_IDS.has(id);
 }
 
-export function AgentWorkspaceRouter({ agent, onBack }: { agent: BuiltinAgent; onBack: () => void }) {
+export function AgentWorkspaceRouter({
+  agent,
+  onBack,
+  initialTitle,
+}: {
+  agent: BuiltinAgent;
+  onBack: () => void;
+  /** Seed text from a deep link, e.g. a content idea sent from the Action Plan. */
+  initialTitle?: string;
+}) {
   switch (agent.id) {
     case 'title-doctor':
-      return <TitleDoctorWorkspace agent={agent} onBack={onBack} />;
+      return <TitleDoctorWorkspace agent={agent} onBack={onBack} initialTitle={initialTitle} />;
     case 'trend-scout':
       return <TrendScoutWorkspace agent={agent} onBack={onBack} />;
     case 'seo-optimizer':
@@ -38,6 +49,8 @@ export function AgentWorkspaceRouter({ agent, onBack }: { agent: BuiltinAgent; o
       return <SponsorshipWorkspace agent={agent} onBack={onBack} />;
     case 'repurposer':
       return <RepurposerWorkspace agent={agent} onBack={onBack} />;
+    case 'calendar-planner':
+      return <CalendarWorkspace agent={agent} onBack={onBack} />;
     default:
       return null;
   }

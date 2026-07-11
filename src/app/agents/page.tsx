@@ -32,6 +32,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { ThumbnailStudio } from '@/components/agents/ThumbnailStudio';
+import { RecentScriptsLibrary } from '@/components/agents/RecentScriptsLibrary';
 import { draftAgent } from '@/ai/flows/draft-agent';
 import { updateAgentMemory } from '@/ai/flows/update-agent-memory';
 import * as store from '@/services/agent-store';
@@ -44,7 +45,7 @@ import type { ToolkitInfo } from '@/services/composio';
 
 // --- Types ---
 
-type View = 'LIST' | 'CREATE' | 'CHAT' | 'STUDIO' | 'WORKSPACE';
+type View = 'LIST' | 'CREATE' | 'CHAT' | 'STUDIO' | 'SCRIPTS' | 'WORKSPACE';
 
 // --- Templates ---
 
@@ -145,6 +146,8 @@ export default function AgentsPage() {
   const [workspaceAgent, setWorkspaceAgent] = useState<BuiltinAgent | null>(null);
   /** Project to preselect when the Studio opens via deep link from Content Insights. */
   const [studioProjectId, setStudioProjectId] = useState<string | undefined>(undefined);
+  /** Seed text for a workspace opened via deep link (e.g. an Action Plan idea). */
+  const [workspaceTitle, setWorkspaceTitle] = useState<string | undefined>(undefined);
 
   // Create form state
   const [formName, setFormName] = useState('');
@@ -193,6 +196,9 @@ export default function AgentsPage() {
       const agentId = params.get('agent');
       const target = agentId ? BUILTIN_AGENTS.find((a) => a.id === agentId) : undefined;
       if (target && hasWorkspace(target.id)) {
+        // ?title= lets a caller seed the workspace — the Action Plan sends a
+        // content idea straight here rather than making you retype it.
+        setWorkspaceTitle(params.get('title') ?? undefined);
         setWorkspaceAgent(target);
         setView('WORKSPACE');
       }
@@ -298,6 +304,10 @@ export default function AgentsPage() {
   async function openBuiltin(b: BuiltinAgent) {
     if (b.action === 'STUDIO') {
       setView('STUDIO');
+      return;
+    }
+    if (b.action === 'SCRIPTS') {
+      setView('SCRIPTS');
       return;
     }
     // A full-page tool that lives in the hub rather than the sidebar.
@@ -723,10 +733,15 @@ export default function AgentsPage() {
         )}
 
         {view === 'STUDIO' && <div className="relative z-10"><ThumbnailStudio onBack={() => setView('LIST')} initialProjectId={studioProjectId} /></div>}
+        {view === 'SCRIPTS' && <div className="relative z-10"><RecentScriptsLibrary onBack={() => setView('LIST')} /></div>}
 
         {view === 'WORKSPACE' && workspaceAgent && (
           <div className="relative z-10">
-            <AgentWorkspaceRouter agent={workspaceAgent} onBack={() => { setWorkspaceAgent(null); setView('LIST'); }} />
+            <AgentWorkspaceRouter
+              agent={workspaceAgent}
+              initialTitle={workspaceTitle}
+              onBack={() => { setWorkspaceAgent(null); setWorkspaceTitle(undefined); setView('LIST'); }}
+            />
           </div>
         )}
 

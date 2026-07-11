@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Send } from 'lucide-react';
+import { BookmarkCheck, BookmarkPlus, Loader2, Send } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -19,6 +19,7 @@ import { RichText } from '@/components/max/RichText';
 import { ComposerToolbar } from '@/components/max/ComposerToolbar';
 import { streamMaxReply } from '@/services/max-chat-client';
 import { MAX_TOOLS, buildMaxInstructions } from '@/ai/agents/max-prompt';
+import * as agentStore from '@/services/agent-store';
 import type { MaxChatMessage, MaxProject, MaxThread } from '@/services/max-store';
 
 const CC_INPUT = 'bg-transparent border-none text-white placeholder:text-slate-500 focus-visible:ring-0 shadow-none';
@@ -35,17 +36,25 @@ export function MaxChat({
   projects: MaxProject[];
   onModelChange: (model: string | undefined) => void;
   onProjectIdsChange: (ids: string[]) => void;
-  /** Called with the completed [user, assistant] pair once a reply finishes streaming. */
-  onExchange: (messages: MaxChatMessage[]) => void;
+  /**
+   * Called with the completed [user, assistant] pair once a reply finishes
+   * streaming. Awaited (not fire-and-forget) so `sending` only clears —
+   * making the per-message action buttons interactive — once the thread
+   * (including its auto-derived title) has actually finished updating; see
+   * the [[script-with-max-architecture]] note on this class of race.
+   */
+  onExchange: (messages: MaxChatMessage[]) => Promise<void>;
 }) {
   const [messages, setMessages] = useState<MaxChatMessage[]>(thread.messages);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [statusText, setStatusText] = useState('');
+  const [savedIndices, setSavedIndices] = useState<Set<number>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setMessages(thread.messages);
+    setSavedIndices(new Set());
   }, [thread.id]);
 
   useEffect(() => {
@@ -53,6 +62,12 @@ export function MaxChat({
   }, [messages, statusText]);
 
   const attachedProjects = projects.filter((p) => thread.projectIds.includes(p.id));
+
+  async function handleSaveScript(index: number, content: string) {
+    await agentStore.addScript({ title: thread.title, script: content, threadId: thread.id, model: thread.model });
+    setSavedIndices((prev) => new Set(prev).add(index));
+    toast({ title: 'Saved to Recent Scripts', description: 'Find it under My Agents → Recent Scripts.' });
+  }
 
   async function sendMessage() {
     if (!input.trim() || sending) return;
@@ -87,7 +102,7 @@ export function MaxChat({
       });
       const assistantMsg: MaxChatMessage = { role: 'assistant', content: assistant, createdAt: new Date().toISOString() };
       setMessages([...nextMessages, assistantMsg]);
-      onExchange([userMsg, assistantMsg]);
+      await onExchange([userMsg, assistantMsg]);
     } catch (err) {
       console.error(err);
       toast({ variant: 'destructive', title: 'Max failed to respond', description: 'Check your Mesh API key and try again.' });
@@ -124,8 +139,21 @@ export function MaxChat({
                 ) : (
                   <>
                     <RichText content={m.content} />
-                    {m.content.trim() && (
-                      <div className="pt-1 flex justify-end">
+                    {/* Hidden while this specific message is still streaming in — clicking
+                        Save/Send before the reply (and the thread's auto-derived title) has
+                        actually finished would capture partial content and a stale title. */}
+                    {m.content.trim() && !(sending && i === messages.length - 1) && (
+                      <div className="pt-1 flex justify-end gap-1.5">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={savedIndices.has(i)}
+                          onClick={() => handleSaveScript(i, m.content)}
+                          className="gap-1.5 border-white/10 bg-white/5 text-slate-200 hover:bg-white/10 hover:text-white disabled:opacity-100 disabled:text-emerald-400"
+                        >
+                          {savedIndices.has(i) ? <BookmarkCheck className="h-3.5 w-3.5" /> : <BookmarkPlus className="h-3.5 w-3.5" />}
+                          {savedIndices.has(i) ? 'Saved' : 'Save script'}
+                        </Button>
                         <SendToMenu title={thread.title} body={m.content} kinds={['doc', 'email', 'file']} />
                       </div>
                     )}

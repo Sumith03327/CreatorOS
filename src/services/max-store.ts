@@ -188,6 +188,26 @@ export async function removeProjectFile(projectId: string, fileId: string): Prom
   return updateProject(projectId, { files: project.files.filter((f) => f.id !== fileId) });
 }
 
+/**
+ * Replaces the file with a matching `name` if one exists, else appends —
+ * the primitive Research's live autosave is built on, so a repeated
+ * citation or a running "Research Notes" file updates in place instead of
+ * piling up duplicates.
+ */
+export async function upsertProjectFile(
+  projectId: string,
+  file: { name: string; kind: MaxFileKind; content: string }
+): Promise<MaxProject | null> {
+  const project = await getProject(projectId);
+  if (!project) return null;
+  const existing = project.files.find((f) => f.name === file.name);
+  if (!existing) return addProjectFile(projectId, file);
+  const files = project.files.map((f) =>
+    f.name === file.name ? { ...f, kind: file.kind, content: file.content, addedAt: new Date().toISOString() } : f
+  );
+  return updateProject(projectId, { files });
+}
+
 // --- Threads CRUD ------------------------------------------------------------
 
 /** Backfills fields added after a thread was first created (older localStorage data). */
@@ -265,10 +285,26 @@ export async function addSource(
   threadId: string,
   source: { kind: MaxSourceKind; label: string; value: string }
 ): Promise<MaxThread | null> {
+  return addSources(threadId, [source]);
+}
+
+/**
+ * Adds several sources in one read-modify-write cycle. A research answer
+ * can cite many sources at once; adding them one call at a time would race
+ * on localStorage's non-transactional read-then-write and silently drop all
+ * but the last one, so callers with a batch should always use this instead
+ * of looping `addSource`.
+ */
+export async function addSources(
+  threadId: string,
+  sources: { kind: MaxSourceKind; label: string; value: string }[]
+): Promise<MaxThread | null> {
+  if (!sources.length) return getThread(threadId);
   const thread = await getThread(threadId);
   if (!thread) return null;
-  const entry: MaxSourceItem = { ...source, id: newId(), addedAt: new Date().toISOString() };
-  return updateThread(threadId, { sources: [...thread.sources, entry] });
+  const now = new Date().toISOString();
+  const entries: MaxSourceItem[] = sources.map((s) => ({ ...s, id: newId(), addedAt: now }));
+  return updateThread(threadId, { sources: [...thread.sources, ...entries] });
 }
 
 export async function removeSource(threadId: string, sourceId: string): Promise<MaxThread | null> {

@@ -23,6 +23,7 @@ const key = (...parts: string[]) => [NS, SCHEMA, ...parts].join(':');
 
 const AGENTS_KEY = key('agents');
 const THUMBS_KEY = key('thumbnails');
+const SCRIPTS_KEY = key('scripts');
 const PROJECTS_KEY = key('thumbnail-projects');
 const threadKey = (agentId: string) => key('thread', agentId);
 const memoryKey = (agentId: string) => key('memory', agentId);
@@ -75,6 +76,17 @@ export interface SavedThumbnail {
   /** The Mesh model that rendered it, and the prompt it rendered from. */
   modelId?: string;
   prompt?: string;
+}
+
+export interface SavedScript {
+  id: string;
+  title: string;
+  script: string;
+  createdAt: string;
+  /** The Script & Analyses thread this was saved from, for "Open in Script & Analyses". */
+  threadId?: string;
+  /** The Mesh model that wrote it. */
+  model?: string;
 }
 
 /**
@@ -408,5 +420,38 @@ export async function addThumbnails(
 export async function removeThumbnail(id: string): Promise<SavedThumbnail[]> {
   const next = (await listThumbnails()).filter((t) => t.id !== id);
   await backend.write(THUMBS_KEY, next);
+  return next;
+}
+
+// --- Recent Scripts library ------------------------------------------------
+
+export async function listScripts(): Promise<SavedScript[]> {
+  return (await backend.read<SavedScript[]>(SCRIPTS_KEY)) ?? [];
+}
+
+/** Prepend a saved script to the library and return the full list. */
+export async function addScript(input: {
+  title: string;
+  script: string;
+  threadId?: string;
+  model?: string;
+}): Promise<SavedScript[]> {
+  const existing = await listScripts();
+  const entry: SavedScript = {
+    id: newId(),
+    title: input.title || 'Untitled script',
+    script: input.script,
+    threadId: input.threadId,
+    model: input.model,
+    createdAt: new Date().toISOString(),
+  };
+  const next = [entry, ...existing].slice(0, 60); // cap to keep storage bounded
+  await backend.write(SCRIPTS_KEY, next);
+  return next;
+}
+
+export async function removeScript(id: string): Promise<SavedScript[]> {
+  const next = (await listScripts()).filter((s) => s.id !== id);
+  await backend.write(SCRIPTS_KEY, next);
   return next;
 }
